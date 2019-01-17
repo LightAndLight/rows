@@ -24,12 +24,12 @@ data Tm a
 
   -- | Empty record
   --
-  -- @{}@
+  -- @*{}@
   | TmEmpty
 
   -- | Record extension
   --
-  -- @{ l = _ | _ }@
+  -- @*{ l = _ | _ }@
   | TmExtend Label
 
   -- | Record selection
@@ -41,6 +41,21 @@ data Tm a
   --
   -- @_ - l@
   | TmRestrict Label
+
+  -- | Variant matching
+  --
+  -- @+{ _ is l ? _ | _ }@
+  | TmMatch Label
+
+  -- | Variant injection
+  --
+  -- @+{ l = _ }@
+  | TmInject Label
+
+  -- | Variant embedding
+  --
+  -- @+{ l | _ }@
+  | TmEmbed Label
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Tm
 deriveShow1 ''Tm

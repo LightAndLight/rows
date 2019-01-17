@@ -267,7 +267,7 @@ main = do
                (tyRecord $ tyRowExtend (Label "l") (pure "a") (pure "r"))
                (pure "a"))
 
-      it "|- (\r -> r.f r.x) : forall a b r. Record (f : a -> b, x : a | r) -> b" $ do
+      it "|- (\\r -> r.f r.x) : forall a b r. Record (f : a -> b, x : a | r) -> b" $ do
         let
           tyCtorCtx = const Nothing
 
@@ -330,3 +330,90 @@ main = do
           `shouldBe`
 
           Right (forAll [] $ TyCtor "B")
+
+      it "r : Row, x : Record (x : A | r) -> A, y : Record (y : A | r) |/- x y : A" $ do
+        let
+          tyCtorCtx x =
+            case x of
+              "A" -> Just KindType
+              _ -> Nothing
+
+          tyVarCtx :: String -> Maybe (Kind Void)
+          tyVarCtx x =
+            case x of
+              "r" -> Just KindRow
+              _ -> Nothing
+
+          varCtx :: String -> Either String (Ty String)
+          varCtx x =
+            case x of
+              "x" ->
+                Right $
+                tyArr
+                  (tyRecord $ tyRowExtend (Label "x") (TyCtor "A") $ pure "r")
+                  (TyCtor "A")
+              "y" ->
+                Right $
+                tyRecord $ tyRowExtend (Label "y") (TyCtor "A") $ pure "r"
+              _ -> Left x
+
+        runInferType
+          supply
+          tyCtorCtx
+          tyVarCtx
+          varCtx
+          (TmApp (pure "x") (pure "y"))
+
+          `shouldBe`
+
+          Left
+          (TypeMismatch
+             (lift $ tyRowExtend (Label "x") (TyCtor "A") $ pure "r")
+             (lift $ tyRowExtend (Label "y") (TyCtor "A") $ pure "r"))
+
+      it "r : Row, x : Record (x : A, y : B | r) -> A, y : Record (y : A, X : B | r) |/- x y : A" $ do
+        let
+          tyCtorCtx x =
+            case x of
+              "A" -> Just KindType
+              "B" -> Just KindType
+              _ -> Nothing
+
+          tyVarCtx :: String -> Maybe (Kind Void)
+          tyVarCtx x =
+            case x of
+              "r" -> Just KindRow
+              _ -> Nothing
+
+          varCtx :: String -> Either String (Ty String)
+          varCtx x =
+            case x of
+              "x" ->
+                Right $
+                tyArr
+                  (tyRecord $
+                   tyRowExtend (Label "x") (TyCtor "A") $
+                   tyRowExtend (Label "y") (TyCtor "B") $
+                   pure "r")
+                  (TyCtor "A")
+              "y" ->
+                Right $
+                tyRecord $
+                tyRowExtend (Label "y") (TyCtor "A") $
+                tyRowExtend (Label "x") (TyCtor "B") $
+                pure "r"
+              _ -> Left x
+
+        runInferType
+          supply
+          tyCtorCtx
+          tyVarCtx
+          varCtx
+          (TmApp (pure "x") (pure "y"))
+
+          `shouldBe`
+
+          Left
+          (TypeMismatch
+             (lift $ TyCtor "A")
+             (lift $ TyCtor "B"))

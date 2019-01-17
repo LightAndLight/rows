@@ -120,6 +120,7 @@ combineType (MetaT x) (MetaT y) = MetaT $ go x y
     go TyArr TyArr = TyArr
     go TyRowEmpty TyRowEmpty = TyRowEmpty
     go TyRecord TyRecord = TyRecord
+    go TyVariant TyVariant = TyVariant
     go (TyRowExtend l) (TyRowExtend l') | l == l' = TyRowExtend l
     go (TyCtor s) (TyCtor s') | s == s' = TyCtor s
     go (TyVar (N a)) (TyVar (N b)) | a == b = TyVar (N b)
@@ -195,33 +196,34 @@ findType =
   traverseOf plate (fmap unMetaT . findType . MetaT) <=<
   fmap unMetaT . classDesc
 
+generalize :: Ty (Meta Int tyVar) -> Forall tyVar
+generalize t =
+  Forall (Set.size uniq) $
+  abstractEither
+    (foldMeta (Left . fromJust . (`elemIndex` ordered uniq metas)) Right)
+    t
+  where
+    ordered set xs =
+      case xs of
+        [] -> []
+        a:as ->
+          if a `Set.member` set
+          then a : ordered (Set.delete a set) as
+          else ordered set as
+    (uniq, metas) =
+      foldr
+        (\a (b1, b2) -> foldMeta ((,) <$> (`Set.insert` b1) <*> (: b2)) (const (b1, b2)) a)
+        (Set.empty, [])
+        t
+
 generalizeType
-  :: forall tyVar tmVar c m
-   . ( MonadError (TypeError Int tyVar tmVar) m
+  :: ( MonadError (TypeError Int tyVar tmVar) m
      , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
      , Eq tyVar
      )
   => MetaT Int Ty tyVar
   -> m (Forall tyVar)
 generalizeType = fmap generalize . fmap unMetaT . findType
-  where
-    generalize :: Ty (Meta Int tyVar) -> Forall tyVar
-    generalize t =
-      Forall (Set.size uniq) $
-      abstractEither (foldMeta (Left . fromJust . (`elemIndex` ordered uniq metas)) Right) t
-      where
-        ordered set xs =
-          case xs of
-            [] -> []
-            a:as ->
-              if a `Set.member` set
-              then a : ordered (Set.delete a set) as
-              else ordered set as
-        (uniq, metas) =
-          foldr
-            (\a (b1, b2) -> foldMeta ((,) <$> (`Set.insert` b1) <*> (: b2)) (const (b1, b2)) a)
-            (Set.empty, [])
-            t
 
 inferTypeM
   :: ( MonadState (InferState Int tyVar) m
@@ -269,6 +271,25 @@ inferTypeM tyCtorCtx varCtx tm =
       metaRow <- TyVar <$> newMeta KindRow
       pure . MetaT $
         tyArr metaTy (tyArr (tyRecord metaRow) (tyRecord $ tyRowExtend l metaTy metaRow))
+    TmMatch l -> do
+      metaA <- TyVar <$> newMeta KindType
+      metaB <- TyVar <$> newMeta KindType
+      metaRow <- TyVar <$> newMeta KindRow
+      pure . MetaT $
+        tyArr (tyVariant $ tyRowExtend l metaA metaRow) $
+        tyArr (tyArr metaA metaB) $
+        tyArr (tyArr (tyVariant metaRow) metaB) $
+        metaB
+    TmInject l -> do
+      metaTy <- TyVar <$> newMeta KindType
+      metaRow <- TyVar <$> newMeta KindRow
+      pure . MetaT $
+        tyArr metaTy (tyVariant $ tyRowExtend l metaTy metaRow)
+    TmEmbed l -> do
+      metaTy <- TyVar <$> newMeta KindType
+      metaRow <- TyVar <$> newMeta KindRow
+      pure . MetaT $
+        tyArr metaRow (tyVariant $ tyRowExtend l metaTy metaRow)
 
 inferType
   :: ( MonadError (TypeError Int tyVar tmVar) m

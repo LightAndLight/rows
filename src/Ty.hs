@@ -48,6 +48,11 @@ data Ty a
   --
   -- @Record@
   | TyRecord
+
+  -- | Variant
+  --
+  -- @Variant@
+  | TyVariant
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
 deriveEq1 ''Ty
 deriveOrd1 ''Ty
@@ -64,6 +69,9 @@ tyRowExtend l a b = TyApp (TyApp (TyRowExtend l) a) b
 
 tyRecord :: Ty a -> Ty a
 tyRecord = TyApp TyRecord
+
+tyVariant :: Ty a -> Ty a
+tyVariant = TyApp TyVariant
 
 data Forall a
   = Forall !Int (Scope Int Ty a)

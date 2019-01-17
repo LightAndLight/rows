@@ -111,6 +111,8 @@ inferKindM _ _ TyRowEmpty =
   pure KindRow
 inferKindM _ _ TyRecord =
   pure $ KindArr KindRow KindType
+inferKindM _ _ TyVariant =
+  pure $ KindArr KindRow KindType
 inferKindM _ _ TyRowExtend{} =
   pure $ KindArr KindType (KindArr KindRow KindRow)
 

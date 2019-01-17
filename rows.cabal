@@ -23,6 +23,7 @@ library
                      , Inference.Kind
                      , Inference.Type
                      , Label
+                     , Parser
   build-depends:       base <5
                      , bound
                      , concurrent-supply
@@ -32,6 +33,7 @@ library
                      , lens
                      , megaparsec
                      , mtl
+                     , text
                      , transformers
   hs-source-dirs:      src
   ghc-options:         -Wall -Werror

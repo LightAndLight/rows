@@ -18,6 +18,7 @@ import Control.Monad ((<=<))
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State (MonadState, evalStateT)
 import Control.Monad.Trans.Class (lift)
+import Data.Bifunctor (first)
 import Data.Equivalence.Monad (MonadEquiv, equate, classDesc, runEquivT)
 import Data.List (elemIndex)
 import Data.Maybe (fromJust)
@@ -233,10 +234,14 @@ inferTypeM
      )
   => (String -> Maybe (Kind Void)) -- ^ Type constructors
   -> (x -> Either tmVar (MetaT Int Ty tyVar))
-  -> Tm x
+  -> Tm (Meta Int tyVar) x
   -> m (MetaT Int Ty tyVar)
 inferTypeM tyCtorCtx varCtx tm =
   case tm of
+    TmAnn a ty -> do
+      aTy <- inferTypeM tyCtorCtx varCtx a
+      unifyType tyCtorCtx aTy (MetaT ty)
+      pure $ MetaT ty
     TmVar a ->
       either (throwError . TypeVarNotFound) pure $ varCtx a
     TmApp a b -> do
@@ -300,7 +305,7 @@ inferType
   -> (String -> Maybe (Kind Void)) -- ^ Type constructors
   -> (tyVar -> Maybe (Kind Void)) -- ^ Type variables
   -> (x -> Either tmVar (Ty tyVar)) -- ^ Term variables
-  -> Tm x
+  -> Tm tyVar x
   -> m (Forall tyVar)
 inferType supply tyCtorCtx tyVarCtx varCtx tm =
   runEquivT
@@ -311,5 +316,5 @@ inferType supply tyCtorCtx tyVarCtx varCtx tm =
         inferTypeM
           tyCtorCtx
           (fmap lift . varCtx)
-          tm)
+          (first N tm))
        (InferState supply $ foldMeta (const Nothing) tyVarCtx))

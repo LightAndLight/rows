@@ -30,6 +30,7 @@ library
                      , deriving-compat
                      , equivalence
                      , lens
+                     , megaparsec
                      , mtl
                      , transformers
   hs-source-dirs:      src

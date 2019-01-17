@@ -1,26 +1,33 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+{-# language FlexibleContexts #-}
 {-# language StandaloneDeriving #-}
 {-# language TemplateHaskell #-}
 module Tm where
 
-import Bound.Scope (Scope, abstract1)
+import Bound.Scope (Scope, abstract1, hoistScope)
 import Bound.TH (makeBound)
+import Data.Bifunctor (Bifunctor(..))
 import Data.Deriving (deriveEq1, deriveShow1)
 
 import Label
+import Ty
 
-data Tm a
+data Tm tyVar a
+  -- | Type annotation
+  --
+  -- @x : T@
+  = TmAnn (Tm tyVar a) (Ty tyVar)
   -- | Term variable
   -- @x@
-  = TmVar a
+  | TmVar a
   -- | Function elimination
   --
   -- @f x@
-  | TmApp (Tm a) (Tm a)
+  | TmApp (Tm tyVar a) (Tm tyVar a)
   -- | Function introduction
   --
   -- @\x -> x@
-  | TmLam (Scope () Tm a)
+  | TmLam (Scope () (Tm tyVar) a)
 
   -- | Empty record
   --
@@ -61,8 +68,23 @@ deriveEq1 ''Tm
 deriveShow1 ''Tm
 makeBound ''Tm
 
-lam :: Eq a => a -> Tm a -> Tm a
+instance Bifunctor Tm where
+  bimap f g tm =
+    case tm of
+      TmAnn a b -> TmAnn (bimap f g a) (fmap f b)
+      TmVar a -> TmVar $ g a
+      TmApp a b -> TmApp (bimap f g a) (bimap f g b)
+      TmLam s -> TmLam . hoistScope (first f) $ fmap g s
+      TmEmpty -> TmEmpty
+      TmExtend l -> TmExtend l
+      TmSelect l -> TmSelect l
+      TmRestrict l -> TmRestrict l
+      TmMatch l -> TmMatch l
+      TmInject l -> TmInject l
+      TmEmbed l -> TmEmbed l
+
+lam :: Eq a => a -> Tm tyVar a -> Tm tyVar a
 lam a = TmLam . abstract1 a
 
-deriving instance Eq a => Eq (Tm a)
-deriving instance Show a => Show (Tm a)
+deriving instance (Eq tyVar, Eq a) => Eq (Tm tyVar a)
+deriving instance (Show tyVar, Show a) => Show (Tm tyVar a)

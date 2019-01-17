@@ -16,7 +16,13 @@ category:            Language
 extra-source-files:  CHANGELOG.md
 
 library
-  exposed-modules:     Tm, Ty, Kind, Meta, Inference.Kind, Inference.Type
+  exposed-modules:     Tm
+                     , Ty
+                     , Kind
+                     , Meta
+                     , Inference.Kind
+                     , Inference.Type
+                     , Label
   build-depends:       base <5
                      , bound
                      , concurrent-supply

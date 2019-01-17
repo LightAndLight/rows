@@ -9,8 +9,11 @@ module Inference.Kind where
 
 import Control.Applicative ((<|>))
 import Control.Concurrent.Supply (Supply, freshId)
+import Control.Lens.Plated (plate)
 import Control.Lens.Review ((#))
 import Control.Lens.TH (makeClassyPrisms)
+import Control.Lens.Traversal (traverseOf)
+import Control.Monad ((<=<))
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State (MonadState, state)
 import Data.Equivalence.Monad (MonadEquiv, EquivT, equate, classDesc, runEquivT)
@@ -46,16 +49,13 @@ zonkKinds
   :: MonadEquiv c (Kind Int) (Kind Int) m
   => Kind Int
   -> m (Kind Void)
-zonkKinds k =
-  case k of
-    KindVar v -> do
-      k' <- classDesc $ KindVar v
-      case k' of
-        KindVar v' | v == v' -> pure KindType
-        _ -> zonkKinds k'
-    KindType -> pure KindType
-    KindRow -> pure KindRow
-    KindArr x y -> KindArr <$> zonkKinds x <*> zonkKinds y
+zonkKinds k = (>> KindType) <$> findKind k
+
+findKind
+  :: MonadEquiv c (Kind Int) (Kind Int) m
+  => Kind Int
+  -> m (Kind Int)
+findKind = traverseOf plate findKind <=< classDesc
 
 unifyKind
   :: ( AsKindError e a
@@ -65,19 +65,26 @@ unifyKind
   => Kind Int
   -> Kind Int
   -> m ()
-unifyKind (KindVar x) (KindVar y) = equate (KindVar x) (KindVar y)
-unifyKind (KindVar x) k =
-  if occursKind x k
-  then throwError $ _KindOccurs # (x, k)
-  else equate (KindVar x) k
-unifyKind k (KindVar x) =
-  if occursKind x k
-  then throwError $ _KindOccurs # (x, k)
-  else equate (KindVar x) k
-unifyKind KindType KindType = pure ()
-unifyKind KindRow KindRow = pure ()
-unifyKind (KindArr x y) (KindArr x' y') = unifyKind x x' *> unifyKind y y'
-unifyKind x y = throwError $ _KindMismatch # (x, y)
+unifyKind x y = do
+  x' <- findKind x
+  y' <- findKind y
+  go x' y'
+  where
+    go (KindVar x') (KindVar y') = equate (KindVar x') (KindVar y')
+    go (KindVar x') k =
+      if occursKind x' k
+      then throwError $ _KindOccurs # (x', k)
+      else equate (KindVar x') k
+    go k (KindVar x') =
+      if occursKind x' k
+      then throwError $ _KindOccurs # (x', k)
+      else equate (KindVar x') k
+    go KindType KindType = pure ()
+    go KindRow KindRow = pure ()
+    go (KindArr x' y') (KindArr x'' y'') =
+      unifyKind x' x'' *>
+      unifyKind y' y''
+    go x' y' = throwError $ _KindMismatch # (x', y')
 
 inferKindM
   :: ( MonadState Supply m
@@ -100,6 +107,12 @@ inferKindM ctorCtx varCtx (TyApp x y) = do
   retKind <- KindVar <$> state freshId
   unifyKind xKind (KindArr yKind retKind)
   pure retKind
+inferKindM _ _ TyRowEmpty =
+  pure KindRow
+inferKindM _ _ TyRecord =
+  pure $ KindArr KindRow KindType
+inferKindM _ _ TyRowExtend{} =
+  pure $ KindArr KindType (KindArr KindRow KindRow)
 
 inferDataDeclKind
   :: forall e a m

@@ -7,10 +7,40 @@ import Bound.Scope (Scope, abstract1)
 import Bound.TH (makeBound)
 import Data.Deriving (deriveEq1, deriveShow1)
 
+import Label
+
 data Tm a
+  -- | Term variable
+  -- @x@
   = TmVar a
+  -- | Function elimination
+  --
+  -- @f x@
   | TmApp (Tm a) (Tm a)
+  -- | Function introduction
+  --
+  -- @\x -> x@
   | TmLam (Scope () Tm a)
+
+  -- | Empty record
+  --
+  -- @{}@
+  | TmEmpty
+
+  -- | Record extension
+  --
+  -- @{ l = _ | _ }@
+  | TmExtend Label
+
+  -- | Record selection
+  --
+  -- @_.l@
+  | TmSelect Label
+
+  -- | Record restriction
+  --
+  -- @_ - l@
+  | TmRestrict Label
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Tm
 deriveShow1 ''Tm

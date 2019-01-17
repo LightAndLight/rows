@@ -12,6 +12,7 @@ import Data.Void (Void)
 import Inference.Kind
 import Inference.Type
 import Kind
+import Label
 import Meta
 import Tm
 import Ty
@@ -39,7 +40,7 @@ runInferDataDeclKind supply a b c d =
   runExcept $ evalStateT (inferDataDeclKind a b c d) supply
 
 runInferType
-  :: Ord b
+  :: (Ord b, Show b)
   => Supply
   -> (String -> Maybe (Kind Void)) -- ^ Type constructors
   -> (b -> Maybe (Kind Void)) -- ^ Type variables
@@ -47,14 +48,14 @@ runInferType
   -> Tm c
   -> Either (TypeError Int b c) (Forall b)
 runInferType supply a b c tm =
-  runExcept $ evalStateT (inferType a b c tm) supply
+  runExcept $ inferType supply a b c tm
 
 main :: IO ()
 main = do
   supply <- newSupply
   hspec $ do
     describe "Kinds" $ do
-      it "A : Type -> Row, B : Type |- a b : Row" $ do
+      it "1) A : Type -> Row, B : Type |- a b : Row" $ do
         let
           ctorCtx =
             \case
@@ -69,7 +70,26 @@ main = do
           `shouldBe`
           Right KindRow
 
-      it "A : Type -> Row, B : Row |/- a b : Row" $ do
+      it "2) A : Type, B : Row |- { l : A | B } : Row" $ do
+        let
+          ctorCtx =
+            \case
+              "A" -> Just KindType
+              "B" -> Just KindRow
+              _ -> Nothing
+
+          varCtx :: String -> Maybe (Kind Void)
+          varCtx = const Nothing
+
+        runInferKind
+          supply
+          ctorCtx
+          varCtx
+          (tyRowExtend (Label "l") (TyCtor "A") (TyCtor "B"))
+          `shouldBe`
+          Right KindRow
+
+      it "3) A : Type -> Row, B : Row |/- a b : Row" $ do
         let
           ctorCtx =
             \case
@@ -84,7 +104,7 @@ main = do
           `shouldBe`
           Left (KindMismatch KindType KindRow)
 
-      it "Mu : ?0 -> Type, f : ?0, f (Mu f) : Type |- Mu : (Type -> Type) -> Type" $ do
+      it "4) Mu : ?0 -> Type, f : ?0, f (Mu f) : Type |- Mu : (Type -> Type) -> Type" $ do
         let
           ctorCtx = const Nothing
 
@@ -105,7 +125,7 @@ main = do
 
           Right (KindArr (KindArr KindType KindType) KindType)
 
-      it "Mu : ?0 -> Type, f : ?0, f f : Type |- occurs error" $ do
+      it "5) Mu : ?0 -> Type, f : ?0, f f : Type |- occurs error" $ do
         let
           ctorCtx = const Nothing
 
@@ -221,3 +241,92 @@ main = do
           `shouldBe`
 
           Left (TypeMismatch (lift $ TyCtor "X") (lift $ TyCtor "Z"))
+
+      it "|- _.l : forall a r. Record (l : a | r) -> a" $ do
+        let
+          tyCtorCtx = const Nothing
+
+          tyVarCtx :: String -> Maybe (Kind Void)
+          tyVarCtx = const Nothing
+
+          varCtx :: String -> Either String (Ty tyVar)
+          varCtx x = Left x
+
+        runInferType
+          supply
+          tyCtorCtx
+          tyVarCtx
+          varCtx
+          (TmSelect $ Label "l")
+
+          `shouldBe`
+
+          Right
+            (forAll ["a", "r"] $
+             tyArr
+               (tyRecord $ tyRowExtend (Label "l") (pure "a") (pure "r"))
+               (pure "a"))
+
+      it "|- (\r -> r.f r.x) : forall a b r. Record (f : a -> b, x : a | r) -> b" $ do
+        let
+          tyCtorCtx = const Nothing
+
+          tyVarCtx :: String -> Maybe (Kind Void)
+          tyVarCtx = const Nothing
+
+          varCtx :: String -> Either String (Ty tyVar)
+          varCtx x = Left x
+
+        runInferType
+          supply
+          tyCtorCtx
+          tyVarCtx
+          varCtx
+          (lam "r" $
+           TmApp
+             (TmApp (TmSelect $ Label "f") (pure "r"))
+             (TmApp (TmSelect $ Label "x") (pure "r")))
+
+          `shouldBe`
+
+          Right
+            (forAll ["a", "b", "r"] $
+             tyArr
+               (tyRecord $
+                tyRowExtend (Label "f") (tyArr (pure "a") (pure "b")) $
+                tyRowExtend (Label "x") (pure "a") $
+                (pure "r"))
+               (pure "b"))
+
+      it "r : Record (x : A, y : B) |- r.y : B" $ do
+        let
+          tyCtorCtx x =
+            case x of
+              "A" -> Just KindType
+              "B" -> Just KindType
+              _ -> Nothing
+
+          tyVarCtx :: String -> Maybe (Kind Void)
+          tyVarCtx = const Nothing
+
+          varCtx :: String -> Either String (Ty tyVar)
+          varCtx x =
+            case x of
+              "r" ->
+                Right $
+                tyRecord $
+                tyRowExtend (Label "x") (TyCtor "A") $
+                tyRowExtend (Label "y") (TyCtor "B") $
+                TyRowEmpty
+              _ -> Left x
+
+        runInferType
+          supply
+          tyCtorCtx
+          tyVarCtx
+          varCtx
+          (TmApp (TmSelect $ Label "y") (pure "r"))
+
+          `shouldBe`
+
+          Right (forAll [] $ TyCtor "B")

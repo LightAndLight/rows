@@ -62,10 +62,10 @@ makeBound ''Ty
 instance Plated (Ty a) where; plate = gplate
 
 tyArr :: Ty a -> Ty a -> Ty a
-tyArr a b = TyApp (TyApp TyArr a) b
+tyArr a = TyApp $ TyApp TyArr a
 
 tyRowExtend :: Label -> Ty a -> Ty a -> Ty a
-tyRowExtend l a b = TyApp (TyApp (TyRowExtend l) a) b
+tyRowExtend l a = TyApp $ TyApp (TyRowExtend l) a
 
 tyRecord :: Ty a -> Ty a
 tyRecord = TyApp TyRecord

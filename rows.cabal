@@ -48,7 +48,9 @@ test-suite rows-tests
                      , equivalence
                      , rows
                      , hspec
+                     , megaparsec
                      , mtl
+                     , text
                      , transformers
   main-is:             Main.hs
   ghc-options:         -Wall -Werror

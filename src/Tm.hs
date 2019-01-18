@@ -86,5 +86,23 @@ instance Bifunctor Tm where
 lam :: Eq a => a -> Tm tyVar a -> Tm tyVar a
 lam a = TmLam . abstract1 a
 
+tmExtend :: Label -> Tm tyVar a -> Tm tyVar a -> Tm tyVar a
+tmExtend l a = TmApp $ TmApp (TmExtend l) a
+
+tmMatch :: Tm tyVar a -> Label -> Tm tyVar a -> Tm tyVar a -> Tm tyVar a
+tmMatch a l b = TmApp $ TmApp (TmApp (TmMatch l) a) b
+
+tmRestrict :: Tm tyVar a -> Label -> Tm tyVar a
+tmRestrict tm l = TmApp (TmRestrict l) tm
+
+tmSelect :: Tm tyVar a -> Label -> Tm tyVar a
+tmSelect tm l = TmApp (TmSelect l) tm
+
+tmInject :: Label -> Tm tyVar a -> Tm tyVar a
+tmInject l = TmApp $ TmInject l
+
+tmEmbed :: Label -> Tm tyVar a -> Tm tyVar a
+tmEmbed l = TmApp $ TmEmbed l
+
 deriving instance (Eq tyVar, Eq a) => Eq (Tm tyVar a)
 deriving instance (Show tyVar, Show a) => Show (Tm tyVar a)

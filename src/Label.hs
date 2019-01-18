@@ -1,4 +1,6 @@
 module Label where
 
-newtype Label = Label String
+import Data.Text (Text)
+
+newtype Label = Label Text
   deriving (Eq, Show, Ord)

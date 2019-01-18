@@ -51,7 +51,7 @@ runInferType
   => Supply
   -> (String -> Maybe (Kind Void)) -- ^ Type constructors
   -> (b -> Maybe (Kind Void)) -- ^ Type variables
-  -> (c -> Either c (Ty b)) -- ^ Type variables
+  -> (c -> Either c (Ty b)) -- ^ Term variables
   -> Tm b c
   -> Either (TypeError Int b c) (Forall b)
 runInferType supply a b c tm =
@@ -66,6 +66,22 @@ testParseTySuccess :: String -> Ty Text -> Spec
 testParseTySuccess str val =
   it str $
     parse @Void (parseTy <* eof) "test" (Text.pack str) `shouldBe` Right val
+
+parseAndCheckTm
+  :: Supply
+  -> (String -> Maybe (Kind Void)) -- ^ Type constructors
+  -> (Text -> Maybe (Kind Void)) -- ^ Type variables
+  -> (Text -> Either Text (Ty Text)) -- ^ Term variables
+  -> String -- ^ Term
+  -> Spec
+parseAndCheckTm a b c d str =
+  it str $
+    case parse @Void (parseTm <* eof) "test" (Text.pack str) of
+      Left err -> error $ show err
+      Right tm ->
+        case runInferType a b c d tm of
+          Left err' -> error $ show err'
+          Right{} -> pure () :: Expectation
 
 main :: IO ()
 main = do
@@ -548,3 +564,48 @@ main = do
            tyRowExtend (Label "b") (TyCtor "B") $
            tyRowExtend (Label "c") (TyCtor "C") $
            pure "r")
+    describe "Check" $ do
+      parseAndCheckTm
+        supply
+        (\case
+            "A" -> Just KindType
+            _ -> Nothing)
+        (const Nothing)
+        Left
+        "(\\x -> x) : A -> A"
+      parseAndCheckTm
+        supply
+        (\case
+            "A" -> Just KindType
+            "B" -> Just KindType
+            _ -> Nothing)
+        (\case
+            "r" -> Just KindRow
+            _ -> Nothing)
+        (\case
+            "b" ->
+              Right $
+              tyArr (TyCtor "A") $
+              tyVariant $
+              tyRowExtend (Label "y") (TyCtor "B") $
+              (pure "r")
+            a -> Left a)
+        "(\\l -> +{ l is x ? b | \\y -> y}) : Variant (x : A, y : B | r) -> Variant (y : B | r)"
+      parseAndCheckTm
+        supply
+        (\case
+            "A" -> Just KindType
+            "B" -> Just KindType
+            _ -> Nothing)
+        (\case
+            "r" -> Just KindRow
+            _ -> Nothing)
+        (\case
+            "b" ->
+              Right $
+              tyArr (TyCtor "A") $
+              tyVariant $
+              tyRowExtend (Label "y") (TyCtor "B") $
+              (pure "r")
+            a -> Left a)
+        "(\\l -> +{ l is x ? b | \\y -> y}) : Variant (y : B, x : A | r) -> Variant (y : B | r)"

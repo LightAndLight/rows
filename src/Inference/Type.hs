@@ -71,7 +71,7 @@ occursType v =
 
 rowTail :: Show a => Ty (Meta Int a) -> Ty (Meta Int a)
 rowTail (TyApp (TyApp TyRowExtend{} _) r) = r
-rowTail (TyVar (M a)) = TyVar $ M a
+rowTail (TyVar v) = TyVar v
 
 rowTail TyRowEmpty = TyRowEmpty
 rowTail a =
@@ -171,6 +171,7 @@ unifyType tyCtorCtx x y = do
         Nothing -> throwError $ TypeMismatch (MetaT ty) (MetaT s)
     go s t@(TyApp (TyApp TyRowExtend{} _) _) = go t s
     go TyRecord TyRecord = pure ()
+    go TyVariant TyVariant = pure ()
     go (TyCtor s) (TyCtor s') | s == s' = pure ()
     go (TyVar (N a)) (TyVar (N b)) | a == b = pure ()
     go ty@(TyVar M{}) ty'@(TyVar M{}) = equate (MetaT ty) (MetaT ty')

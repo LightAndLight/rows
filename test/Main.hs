@@ -17,6 +17,7 @@ import Text.Megaparsec (parse, eof)
 
 import qualified Data.Text as Text
 
+import Desugar
 import Inference.Kind
 import Inference.Type
 import Kind
@@ -63,7 +64,9 @@ runInferType supply a b c tm =
 testParseTmSuccess :: String -> Tm Text Text -> Spec
 testParseTmSuccess str val =
   it str $
-    parse @Void (parseTm <* eof) "test" (Text.pack str) `shouldBe` Right val
+    desugar <$> parse @Void (parseTm <* eof) "test" (Text.pack str)
+    `shouldBe`
+    Right val
 
 testParseTySuccess :: String -> Ty Text -> Spec
 testParseTySuccess str val =
@@ -82,7 +85,7 @@ parseAndCheckTm a b c d str =
     case parse @Void (parseTm <* eof) "test" (Text.pack str) of
       Left err -> error $ show err
       Right tm ->
-        case runInferType a b c d tm of
+        case runInferType a b c d $ desugar tm of
           Left err' -> error $ show err'
           Right{} -> pure () :: Expectation
 
@@ -99,7 +102,7 @@ parseAndOptimise name f str str' =
       Right tm ->
         case parse @Void (parseTm <* eof) "test" (Text.pack str') of
           Left err' -> error $ show err'
-          Right tm' -> rewrite1 f tm `shouldBe` tm'
+          Right tm' -> rewrite1 f (desugar tm) `shouldBe` desugar tm'
 
 main :: IO ()
 main = do

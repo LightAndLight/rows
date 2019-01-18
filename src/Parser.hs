@@ -20,7 +20,7 @@ import Text.Megaparsec.Char.Lexer (lexeme, symbol)
 import qualified Text.Megaparsec as Parse
 
 import Label
-import Tm
+import Syntax
 import Ty
 
 {-# inline chainl1Try #-}
@@ -36,7 +36,7 @@ ident = fmap Text.pack $ (:) <$> lowerChar <*> many (alphaNumChar <|> char '\'')
 label :: MonadParsec e Text m => m Label
 label = Label <$> ident
 
-parseTm :: MonadParsec e Text m => m (Tm Text Text)
+parseTm :: MonadParsec e Text m => m (Syn Text Text)
 parseTm = expr
   where
     expr =
@@ -45,7 +45,7 @@ parseTm = expr
       ann
 
     ann =
-      (\e -> maybe e (TmAnn e)) <$>
+      (\e -> maybe e (SynAnn e)) <$>
       lexeme space restrict <*>
       optional (symbol space ":" *> parseTy)
 
@@ -55,14 +55,14 @@ parseTm = expr
       expr
 
     restrict =
-      foldl (\a b -> TmApp (TmRestrict b) a) <$>
+      foldl (\a b -> SynApp (SynRestrict b) a) <$>
       app <*>
       many (try (space *> symbol space "-") *> label)
 
-    app = chainl1Try select (TmApp <$ space1)
+    app = chainl1Try select (SynApp <$ space1)
 
     select =
-      foldl (\a b -> TmApp (TmSelect b) a) <$>
+      foldl (\a b -> SynApp (SynSelect b) a) <$>
       atom <*>
       many (try (space *> symbol space ".") *> label)
 
@@ -82,37 +82,37 @@ parseTm = expr
           failure
             (Just $ Parse.Tokens $ NonEmpty.fromList $ Text.unpack i)
             [Parse.Label ('v' :| "ariable")]
-        else pure $ TmVar i
+        else pure $ SynVar i
 
     extendSeq =
       symbol space "|" *> expr <* string "}"
 
       <|>
 
-      tmExtend <$ symbol space "," <*>
+      synExtend <$ symbol space "," <*>
       lexeme space label <* symbol space "=" <*>
       expr <*>
       extendSeq
 
       <|>
 
-      TmEmpty <$ string "}"
+      SynEmpty <$ string "}"
 
     record =
       symbol space "*{" *>
-      (tmExtend <$>
+      (synExtend <$>
        lexeme space label <* symbol space "=" <*>
        expr <*>
        extendSeq
 
        <|>
 
-       TmEmpty <$ string "}")
+       SynEmpty <$ string "}")
 
     bracketed = between (symbol space "(") (string ")") expr
 
     embedSeq =
-      tmEmbed <$ symbol space "," <*>
+      synEmbed <$ symbol space "," <*>
       lexeme space label <*>
       embedSeq
 
@@ -123,7 +123,7 @@ parseTm = expr
     variant =
       between (symbol space "+{") (string "}") $
 
-      tmMatch <$>
+      synMatch <$>
       try (expr <* symbol space "is") <*>
       lexeme space label <* symbol space "?" <*>
       expr <* symbol space "|" <*>
@@ -131,7 +131,7 @@ parseTm = expr
 
       <|>
 
-      (\lbl -> either (tmInject lbl) (tmEmbed lbl)) <$>
+      (\lbl -> either (synInject lbl) (synEmbed lbl)) <$>
       lexeme space label <*>
       (fmap Left (symbol space "=" *> expr) <|>
        fmap Right embedSeq)

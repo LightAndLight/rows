@@ -766,3 +766,8 @@ main = do
           makeSections
           "x (\\y -> y _ _)"
           "x (\\z -> \\w -> \\y -> y z w)"
+        parseAndDesugar
+          "makeSections"
+          makeSections
+          "x (_.l) (+{ m = _ })"
+          "x (\\y -> y.l) (\\y -> +{ m = y })"

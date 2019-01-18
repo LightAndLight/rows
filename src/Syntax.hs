@@ -64,6 +64,16 @@ data Syn tyVar a
   --
   -- @+{ l | _ }@
   | SynEmbed Label
+
+  -- | Unknown value
+  --
+  -- @_@
+  | SynUnknown
+
+  -- | Parenthesis
+  --
+  -- @(...)@
+  | SynParens (Syn tyVar a)
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Syn
 deriveShow1 ''Syn
@@ -83,6 +93,8 @@ instance Bifunctor Syn where
       SynMatch l -> SynMatch l
       SynInject l -> SynInject l
       SynEmbed l -> SynEmbed l
+      SynUnknown -> SynUnknown
+      SynParens a -> SynParens (bimap f g a)
 
 instance Plated1 (Syn tyVar) where
   plate1 f = go
@@ -100,6 +112,8 @@ instance Plated1 (Syn tyVar) where
           SynMatch l -> pure $ SynMatch l
           SynInject l -> pure $ SynInject l
           SynEmbed l -> pure $ SynEmbed l
+          SynUnknown -> pure $ SynUnknown
+          SynParens a -> SynParens <$> f a
 
 lam :: Eq a => a -> Syn tyVar a -> Syn tyVar a
 lam a = SynLam . abstract1 a

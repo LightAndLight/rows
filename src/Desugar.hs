@@ -11,7 +11,7 @@ desugar syn =
     SynAnn a b -> TmAnn (desugar a) b
     SynVar a -> TmVar a
     SynApp a b -> TmApp (desugar a) (desugar b)
-    SynLam s -> TmLam $ toScope $ desugar $ fromScope s
+    SynLam s -> TmLam . toScope $ desugar (fromScope s)
     SynEmpty -> TmEmpty
     SynExtend l -> TmExtend l
     SynSelect l -> TmSelect l
@@ -19,3 +19,5 @@ desugar syn =
     SynMatch l -> TmMatch l
     SynInject l -> TmInject l
     SynEmbed l -> TmEmbed l
+    SynParens a -> desugar a
+    SynUnknown -> undefined

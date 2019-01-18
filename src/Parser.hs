@@ -66,11 +66,14 @@ parseTm = expr
       atom <*>
       many (try (space *> symbol space ".") *> label)
 
+    unknown = SynUnknown <$ string "_"
+
     atom =
       var <|>
       record <|>
-      bracketed <|>
-      variant
+      parens <|>
+      variant <|>
+      unknown
 
     keywords :: [Text]
     keywords = ["is"]
@@ -109,7 +112,9 @@ parseTm = expr
 
        SynEmpty <$ string "}")
 
-    bracketed = between (symbol space "(") (string ")") expr
+    parens =
+      between (symbol space "(") (string ")") $
+      SynParens <$> expr
 
     embedSeq =
       synEmbed <$ symbol space "," <*>
@@ -170,7 +175,7 @@ parseTy = ty
       ty <*>
       (extendSeq <|> TyRowEmpty <$ string ")")
 
-    bracketed =
+    parens =
       symbol space "(" *>
       (tyRowExtend <$>
        lexeme space label <* symbol space ":" <*>
@@ -192,4 +197,4 @@ parseTy = ty
     atom =
       var <|>
       ctor <|>
-      bracketed
+      parens

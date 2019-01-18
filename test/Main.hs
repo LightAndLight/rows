@@ -476,26 +476,10 @@ main = do
           "+{ a is x ? \\b -> b | \\c -> c }"
           (tmMatch (pure "a") (Label "x") (lam "b" $ pure "b") (lam "c" $ pure "c"))
         testParseTmSuccess
-          "+{ a is x ? b | +{ c is y ? d | +{ e is z ? f | \\x -> x }}}"
-          (tmMatch (pure "a") (Label "x") (pure "b") $
-           tmMatch (pure "c") (Label "y") (pure "d") $
-           tmMatch (pure "e") (Label "z") (pure "f") $
-           lam "x" (pure "x")
-          )
-        testParseTmSuccess
-          "+{ a is x ? b, c is y ? d, e is z ? f | \\x -> x }"
-          (tmMatch (pure "a") (Label "x") (pure "b") $
-           tmMatch (pure "c") (Label "y") (pure "d") $
-           tmMatch (pure "e") (Label "z") (pure "f") $
-           lam "x" (pure "x")
-          )
-        testParseTmSuccess
-          "+{ a is x ? b, c is y ? d, e is z ? f }"
-          (tmMatch (pure "a") (Label "x") (pure "b") $
-           tmMatch (pure "c") (Label "y") (pure "d") $
-           tmMatch (pure "e") (Label "z") (pure "f") $
-           lam "x" (pure "x")
-          )
+          "+{ a is x ? b | \\a' -> +{ a' is y ? d | \\a'' -> a'' }}"
+          (tmMatch (pure "a") (Label "x") (pure "b") $ lam "a'" $
+           tmMatch (pure "a'") (Label "y") (pure "d") $ lam "a''" $
+           pure "a''")
         testParseTmSuccess
           "+{ a = b }"
           (tmInject (Label "a") (pure "b"))

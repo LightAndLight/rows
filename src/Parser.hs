@@ -14,7 +14,7 @@ import qualified Data.Text as Text
 
 import Text.Megaparsec (MonadParsec, between, failure, try)
 import Text.Megaparsec.Char
-  (lowerChar, upperChar, space1, space, string, alphaNumChar)
+  (lowerChar, upperChar, space1, space, string, alphaNumChar, char)
 import Text.Megaparsec.Char.Lexer (lexeme, symbol)
 
 import qualified Text.Megaparsec as Parse
@@ -31,7 +31,7 @@ chainl1Try p op = scan
     rst = try ((\f y g x -> g (f x y)) <$> op <*> p) <*> rst <|> pure id
 
 ident :: MonadParsec e Text m => m Text
-ident = fmap Text.pack $ (:) <$> lowerChar <*> many alphaNumChar
+ident = fmap Text.pack $ (:) <$> lowerChar <*> many (alphaNumChar <|> char '\'')
 
 label :: MonadParsec e Text m => m Label
 label = Label <$> ident
@@ -104,15 +104,6 @@ parseTm = expr
 
     bracketed = between (symbol space "(") (string ")") expr
 
-    matchSeq =
-      tmMatch <$ symbol space "," <*>
-      try (expr <* symbol space "is") <*>
-      lexeme space label <* symbol space "?" <*>
-      expr <*>
-      (matchSeq <|>
-       symbol space "|" *> expr <|>
-       pure (lam "x" $ pure "x"))
-
     embedSeq =
       tmEmbed <$ symbol space "," <*>
       lexeme space label <*>
@@ -128,8 +119,8 @@ parseTm = expr
       tmMatch <$>
       try (expr <* symbol space "is") <*>
       lexeme space label <* symbol space "?" <*>
-      expr <*>
-      (matchSeq <|> symbol space "|" *> expr)
+      expr <* symbol space "|" <*>
+      expr
 
       <|>
 

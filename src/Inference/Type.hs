@@ -2,6 +2,7 @@
 {-# language FlexibleInstances, FunctionalDependencies, MultiParamTypeClasses #-}
 {-# language ScopedTypeVariables #-}
 {-# language TemplateHaskell #-}
+{-# language RankNTypes #-}
 module Inference.Type where
 
 import Bound.Scope (abstractEither, fromScope)
@@ -14,6 +15,7 @@ import Control.Lens.Plated (plate)
 import Control.Lens.Review ((#))
 import Control.Lens.Setter ((%=), (.=))
 import Control.Lens.Traversal (traverseOf)
+import Control.Lens.Wrapped (_Wrapped, _Unwrapped)
 import Control.Monad ((<=<))
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State (MonadState, evalStateT)
@@ -72,12 +74,8 @@ occursType v =
 rowTail :: Show a => Ty (Meta Int a) -> Ty (Meta Int a)
 rowTail (TyApp (TyApp TyRowExtend{} _) r) = r
 rowTail (TyVar v) = TyVar v
-
 rowTail TyRowEmpty = TyRowEmpty
-rowTail a =
-  error $
-  "rowTail: can't get tail of:\n\n" <>
-  show a
+rowTail a = error $ "rowTail: can't get tail of:\n\n" <> show a
 
 rewriteRow
   :: ( MonadError (TypeError Int tyVar tmVar) m
@@ -161,6 +159,8 @@ unifyType tyCtorCtx x y = do
     go :: Ty (Meta Int tyVar) -> Ty (Meta Int tyVar) -> m ()
     go TyArr TyArr = pure ()
     go TyRowEmpty TyRowEmpty = pure ()
+    go TyRecord TyRecord = pure ()
+    go TyVariant TyVariant = pure ()
     go (TyRowExtend l) (TyRowExtend l') | l == l' = pure ()
     go ty@(TyApp (TyApp (TyRowExtend l) t) r) s = do
       rewritten <- rewriteRow tyCtorCtx (rowTail r) l s
@@ -170,8 +170,6 @@ unifyType tyCtorCtx x y = do
           unifyType tyCtorCtx (MetaT r) (MetaT r')
         Nothing -> throwError $ TypeMismatch (MetaT ty) (MetaT s)
     go s t@(TyApp (TyApp TyRowExtend{} _) _) = go t s
-    go TyRecord TyRecord = pure ()
-    go TyVariant TyVariant = pure ()
     go (TyCtor s) (TyCtor s') | s == s' = pure ()
     go (TyVar (N a)) (TyVar (N b)) | a == b = pure ()
     go ty@(TyVar M{}) ty'@(TyVar M{}) = equate (MetaT ty) (MetaT ty')
@@ -188,18 +186,16 @@ unifyType tyCtorCtx x y = do
       else equate (MetaT ty) (MetaT ty')
     go l m = throwError $ TypeMismatch (MetaT l) (MetaT m)
 
-
 findType
   :: MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
   => MetaT Int Ty tyVar
   -> m (MetaT Int Ty tyVar)
-findType =
-  fmap MetaT .
-  traverseOf plate (fmap unMetaT . findType . MetaT) <=<
-  fmap unMetaT . classDesc
+findType = _Wrapped go
+  where
+    go = traverseOf plate go <=< _Unwrapped classDesc
 
-generalize :: Ty (Meta Int tyVar) -> Forall tyVar
-generalize t =
+generalize :: MetaT Int Ty tyVar -> Forall tyVar
+generalize (MetaT t) =
   Forall (Set.size uniq) $
   abstractEither
     (foldMeta (Left . fromJust . (`elemIndex` ordered uniq metas)) Right)
@@ -212,6 +208,7 @@ generalize t =
           if a `Set.member` set
           then a : ordered (Set.delete a set) as
           else ordered set as
+
     (uniq, metas) =
       foldr
         (\a (b1, b2) -> foldMeta ((,) <$> (`Set.insert` b1) <*> (: b2)) (const (b1, b2)) a)
@@ -225,7 +222,7 @@ generalizeType
      )
   => MetaT Int Ty tyVar
   -> m (Forall tyVar)
-generalizeType = fmap generalize . fmap unMetaT . findType
+generalizeType = fmap generalize . findType
 
 inferTypeM
   :: ( MonadState (InferState Int tyVar) m

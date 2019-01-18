@@ -4,10 +4,11 @@
 {-# language TemplateHaskell #-}
 module Tm where
 
-import Bound.Scope (Scope, abstract1, hoistScope)
+import Bound.Scope (Scope, abstract1, hoistScope, toScope, fromScope)
 import Bound.TH (makeBound)
 import Data.Bifunctor (Bifunctor(..))
 import Data.Deriving (deriveEq1, deriveShow1)
+import Data.Generics.Plated1 (Plated1(..))
 
 import Label
 import Ty
@@ -83,6 +84,23 @@ instance Bifunctor Tm where
       TmInject l -> TmInject l
       TmEmbed l -> TmEmbed l
 
+instance Plated1 (Tm tyVar) where
+  plate1 f = go
+    where
+      go tm =
+        case tm of
+          TmAnn a b -> (\a' -> TmAnn a' b) <$> f a
+          TmVar a -> pure $ TmVar a
+          TmApp a b -> TmApp <$> f a <*> f b
+          TmLam s -> TmLam . toScope <$> f (fromScope s)
+          TmEmpty -> pure TmEmpty
+          TmExtend l -> pure $ TmExtend l
+          TmSelect l -> pure $ TmSelect l
+          TmRestrict l -> pure $ TmRestrict l
+          TmMatch l -> pure $ TmMatch l
+          TmInject l -> pure $ TmInject l
+          TmEmbed l -> pure $ TmEmbed l
+
 lam :: Eq a => a -> Tm tyVar a -> Tm tyVar a
 lam a = TmLam . abstract1 a
 
@@ -103,6 +121,15 @@ tmInject l = TmApp $ TmInject l
 
 tmEmbed :: Label -> Tm tyVar a -> Tm tyVar a
 tmEmbed l = TmApp $ TmEmbed l
+
+selectFrom :: Label -> Tm tyVar a -> Maybe (Tm tyVar a)
+selectFrom l = go
+  where
+    go (TmApp (TmApp (TmExtend l') val) rest) =
+      if l == l'
+      then Just val
+      else go rest
+    go _ = Nothing
 
 deriving instance (Eq tyVar, Eq a) => Eq (Tm tyVar a)
 deriving instance (Show tyVar, Show a) => Show (Tm tyVar a)

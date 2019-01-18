@@ -85,18 +85,25 @@ parseTm = expr
         else pure $ TmVar i
 
     extendSeq =
+      symbol space "|" *> expr <* string "}"
+
+      <|>
+
       tmExtend <$ symbol space "," <*>
       lexeme space label <* symbol space "=" <*>
       expr <*>
-      (extendSeq <|> TmEmpty <$ string "}")
+      extendSeq
+
+      <|>
+
+      TmEmpty <$ string "}"
 
     record =
       symbol space "*{" *>
       (tmExtend <$>
        lexeme space label <* symbol space "=" <*>
        expr <*>
-       (extendSeq <|>
-        symbol space "|" *> expr <* string "}")
+       extendSeq
 
        <|>
 

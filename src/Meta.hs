@@ -1,8 +1,10 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 {-# language FlexibleContexts #-}
+{-# language FlexibleInstances, MultiParamTypeClasses, TypeFamilies #-}
 {-# language TemplateHaskell #-}
 module Meta where
 
+import Control.Lens.TH (makeWrapped)
 import Control.Monad.Trans.Class (MonadTrans(..))
 import Data.Deriving (deriveEq1, deriveOrd1, deriveShow1)
 import Data.Functor.Classes (Eq1, Show1, Ord1, eq1, showsPrec1, compare1)
@@ -31,6 +33,7 @@ newtype MetaT b m a = MetaT { unMetaT :: m (Meta b a) }
 deriveEq1 ''MetaT
 deriveOrd1 ''MetaT
 deriveShow1 ''MetaT
+makeWrapped ''MetaT
 
 instance (Eq b, Eq a, Eq1 m) => Eq (MetaT b m a) where
   (==) = eq1

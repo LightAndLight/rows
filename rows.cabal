@@ -23,6 +23,7 @@ library
                      , Inference.Kind
                      , Inference.Type
                      , Label
+                     , Optimisation
                      , Parser
   build-depends:       base <5
                      , bound
@@ -33,6 +34,7 @@ library
                      , lens
                      , megaparsec
                      , mtl
+                     , plated1
                      , text
                      , transformers
   hs-source-dirs:      src
@@ -50,6 +52,7 @@ test-suite rows-tests
                      , hspec
                      , megaparsec
                      , mtl
+                     , plated1
                      , text
                      , transformers
   main-is:             Main.hs

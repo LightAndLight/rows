@@ -1,5 +1,6 @@
 {-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
+{-# language RankNTypes #-}
 {-# language TypeApplications #-}
 module Main where
 
@@ -9,6 +10,7 @@ import Control.Concurrent.Supply (Supply, newSupply)
 import Control.Monad.Except (runExcept)
 import Control.Monad.State (evalStateT)
 import Control.Monad.Trans.Class (lift)
+import Data.Generics.Plated1 (rewrite1)
 import Data.Text (Text)
 import Data.Void (Void)
 import Text.Megaparsec (parse, eof)
@@ -20,6 +22,7 @@ import Inference.Type
 import Kind
 import Label
 import Meta
+import Optimisation
 import Parser
 import Tm
 import Ty
@@ -82,6 +85,21 @@ parseAndCheckTm a b c d str =
         case runInferType a b c d tm of
           Left err' -> error $ show err'
           Right{} -> pure () :: Expectation
+
+parseAndOptimise
+  :: String -- ^ Optimisation name
+  -> (forall ty a. Tm ty a -> Maybe (Tm ty a)) -- ^ Optmisation
+  -> String -- ^ Input term
+  -> String -- ^ Expected term
+  -> Spec
+parseAndOptimise name f str str' =
+  it (name <> ": " <> str) $
+    case parse @Void (parseTm <* eof) "test" (Text.pack str) of
+      Left err -> error $ show err
+      Right tm ->
+        case parse @Void (parseTm <* eof) "test" (Text.pack str') of
+          Left err' -> error $ show err'
+          Right tm' -> rewrite1 f tm `shouldBe` tm'
 
 main :: IO ()
 main = do
@@ -522,6 +540,9 @@ main = do
         testParseTmSuccess
           "(\\x -> y) : T"
           (TmAnn (lam "x" $ pure "y") (TyCtor "T"))
+        testParseTmSuccess
+          "*{ x = a }.x"
+          (tmSelect (tmExtend (Label "x") (pure "a") TmEmpty) (Label "x"))
       describe "Type" $ do
         testParseTySuccess "(->)" TyArr
         testParseTySuccess "(->) a b" (tyArr (pure "a") (pure "b"))
@@ -609,3 +630,11 @@ main = do
               (pure "r")
             a -> Left a)
         "(\\l -> +{ l is x ? b | \\y -> y}) : Variant (y : B, x : A | r) -> Variant (y : B | r)"
+    describe "Optimise" $ do
+      parseAndOptimise "etaReduce" etaReduce "\\x -> f x" "f"
+      parseAndOptimise "etaReduce" etaReduce "\\x -> f x x" "\\x -> f x x"
+      parseAndOptimise "recordElim" recordElim "*{ x = a }.x" "a"
+      parseAndOptimise "recordElim" recordElim "*{ y = a, x = b }.x" "b"
+      parseAndOptimise "variantElim" variantElim "+{ +{ x = a } is x ? f | g }" "f a"
+      parseAndOptimise "variantElim" variantElim "+{ +{ x = a } is y ? f | \\b -> +{ b is x ? g | h } }" "g a"
+      parseAndOptimise "variantElim" variantElim "+{ +{ x = a } is y ? f | g }" "g +{ x = a }"

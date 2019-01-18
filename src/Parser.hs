@@ -4,7 +4,7 @@
 {-# language TypeFamilies #-}
 module Parser where
 
-import Control.Applicative ((<**>), (<|>), many, some, optional)
+import Control.Applicative ((<**>), (<|>), many, optional)
 import Data.List.NonEmpty (NonEmpty(..))
 import Data.Text (Text)
 
@@ -84,12 +84,19 @@ parseTm = expr
             [Parse.Label ('v' :| "ariable")]
         else pure $ TmVar i
 
+    extendSeq =
+      tmExtend <$ symbol space "," <*>
+      lexeme space label <* symbol space "=" <*>
+      expr <*>
+      (extendSeq <|> TmEmpty <$ string "}")
+
     record =
       symbol space "*{" *>
-      ((\l v -> TmApp $ TmApp (TmExtend l) v) <$>
+      (tmExtend <$>
        lexeme space label <* symbol space "=" <*>
-       expr <* symbol space "|" <*>
-       expr <* string "}"
+       expr <*>
+       (extendSeq <|>
+        symbol space "|" *> expr <* string "}")
 
        <|>
 
@@ -97,25 +104,39 @@ parseTm = expr
 
     bracketed = between (symbol space "(") (string ")") expr
 
-    variant =
-      between (symbol space "+{") (string "}") $
-
-      (\ex lbl fun -> TmApp $ TmApp (TmApp (TmMatch lbl) ex) fun) <$>
+    matchSeq =
+      tmMatch <$ symbol space "," <*>
       try (expr <* symbol space "is") <*>
       lexeme space label <* symbol space "?" <*>
-      expr <* symbol space "|" <*>
-      expr
+      expr <*>
+      (matchSeq <|>
+       symbol space "|" *> expr <|>
+       pure (lam "x" $ pure "x"))
+
+    embedSeq =
+      tmEmbed <$ symbol space "," <*>
+      lexeme space label <*>
+      embedSeq
 
       <|>
 
-      try
-      ((\lbl tgl ->
-         case tgl of
-           False -> tmInject lbl
-           True -> tmEmbed lbl) <$>
-       lexeme space label <*>
-       (False <$ symbol space "=" <|> True <$ symbol space "|")) <*>
-      expr
+      symbol space "|" *> expr
+
+    variant =
+      between (symbol space "+{") (string "}") $
+
+      tmMatch <$>
+      try (expr <* symbol space "is") <*>
+      lexeme space label <* symbol space "?" <*>
+      expr <*>
+      (matchSeq <|> symbol space "|" *> expr)
+
+      <|>
+
+      (\lbl -> either (tmInject lbl) (tmEmbed lbl)) <$>
+      lexeme space label <*>
+      (fmap Left (symbol space "=" *> expr) <|>
+       fmap Right embedSeq)
 
 parseTy :: MonadParsec e Text m => m (Ty Text)
 parseTy = ty
@@ -129,7 +150,7 @@ parseTy = ty
 
     app = chainl1Try atom (TyApp <$ space1)
 
-    var = TyVar . Text.pack <$> some lowerChar
+    var = TyVar <$> ident
 
     ctor =
       fmap
@@ -139,14 +160,24 @@ parseTy = ty
            else if x == "Variant"
            then TyVariant
            else TyCtor x) $
-      (:) <$> upperChar <*> many lowerChar
+      (:) <$> upperChar <*> many alphaNumChar
+
+    extendSeq =
+      symbol space "|" *> ty <* string ")"
+
+      <|>
+
+      tyRowExtend <$ symbol space "," <*>
+      lexeme space label <* symbol space ":" <*>
+      ty <*>
+      (extendSeq <|> TyRowEmpty <$ string ")")
 
     bracketed =
       symbol space "(" *>
       (tyRowExtend <$>
        lexeme space label <* symbol space ":" <*>
-       ty <* symbol space "|" <*>
-       ty <* string ")"
+       ty <*>
+       extendSeq
 
        <|>
 

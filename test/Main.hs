@@ -467,8 +467,35 @@ main = do
           tmExtend (Label "z") (pure "c") $
           TmEmpty)
         testParseTmSuccess
+          "*{x = a, y = b, z = c}"
+          (tmExtend (Label "x") (pure "a") $
+          tmExtend (Label "y") (pure "b") $
+          tmExtend (Label "z") (pure "c") $
+          TmEmpty)
+        testParseTmSuccess
           "+{ a is x ? \\b -> b | \\c -> c }"
           (tmMatch (pure "a") (Label "x") (lam "b" $ pure "b") (lam "c" $ pure "c"))
+        testParseTmSuccess
+          "+{ a is x ? b | +{ c is y ? d | +{ e is z ? f | \\x -> x }}}"
+          (tmMatch (pure "a") (Label "x") (pure "b") $
+           tmMatch (pure "c") (Label "y") (pure "d") $
+           tmMatch (pure "e") (Label "z") (pure "f") $
+           lam "x" (pure "x")
+          )
+        testParseTmSuccess
+          "+{ a is x ? b, c is y ? d, e is z ? f | \\x -> x }"
+          (tmMatch (pure "a") (Label "x") (pure "b") $
+           tmMatch (pure "c") (Label "y") (pure "d") $
+           tmMatch (pure "e") (Label "z") (pure "f") $
+           lam "x" (pure "x")
+          )
+        testParseTmSuccess
+          "+{ a is x ? b, c is y ? d, e is z ? f }"
+          (tmMatch (pure "a") (Label "x") (pure "b") $
+           tmMatch (pure "c") (Label "y") (pure "d") $
+           tmMatch (pure "e") (Label "z") (pure "f") $
+           lam "x" (pure "x")
+          )
         testParseTmSuccess
           "+{ a = b }"
           (tmInject (Label "a") (pure "b"))
@@ -477,6 +504,11 @@ main = do
           (tmEmbed (Label "a") $
           tmEmbed (Label "b") $
           pure "c")
+        testParseTmSuccess
+          "+{ a, b | c }"
+          (tmEmbed (Label "a") $
+           tmEmbed (Label "b") $
+           pure "c")
         testParseTmSuccess "a : T" (TmAnn (pure "a") (TyCtor "T"))
         testParseTmSuccess
           "a b : T"
@@ -515,3 +547,20 @@ main = do
           (tyRowExtend (Label "a") (TyCtor "A") $
            tyRowExtend (Label "b") (TyCtor "B") $
            TyRowEmpty)
+        testParseTySuccess
+          "(a : A, b : B)"
+          (tyRowExtend (Label "a") (TyCtor "A") $
+           tyRowExtend (Label "b") (TyCtor "B") $
+           TyRowEmpty)
+        testParseTySuccess
+          "(a : A | (b : B | (c : C | r)))"
+          (tyRowExtend (Label "a") (TyCtor "A") $
+           tyRowExtend (Label "b") (TyCtor "B") $
+           tyRowExtend (Label "c") (TyCtor "C") $
+           pure "r")
+        testParseTySuccess
+          "(a : A, b : B, c : C | r)"
+          (tyRowExtend (Label "a") (TyCtor "A") $
+           tyRowExtend (Label "b") (TyCtor "B") $
+           tyRowExtend (Label "c") (TyCtor "C") $
+           pure "r")

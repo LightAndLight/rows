@@ -18,6 +18,7 @@ extra-source-files:  CHANGELOG.md
 library
   exposed-modules:     Desugar
                      , Desugar.Sections
+                     , Evidence
                      , Tm
                      , Ty
                      , Kind

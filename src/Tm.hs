@@ -1,5 +1,6 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 {-# language FlexibleContexts #-}
+{-# language ScopedTypeVariables #-}
 {-# language StandaloneDeriving #-}
 {-# language TemplateHaskell #-}
 module Tm where
@@ -64,10 +65,39 @@ data Tm tyVar a
   --
   -- @+{ l | _ }@
   | TmEmbed Label
+
+  -- | Integer
+  --
+  -- @0@
+  | TmInt !Int
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Tm
 deriveShow1 ''Tm
 makeBound ''Tm
+
+traverseTy
+  :: forall m tyVar tyVar' tmVar
+   . Applicative m
+  => (Ty tyVar -> m (Ty tyVar'))
+  -> Tm tyVar tmVar
+  -> m (Tm tyVar' tmVar)
+traverseTy f = go
+  where
+    go :: forall x. Tm tyVar x -> m (Tm tyVar' x)
+    go tm =
+      case tm of
+        TmAnn a b -> TmAnn <$> go a <*> f b
+        TmVar a -> pure $ TmVar a
+        TmApp a b -> TmApp <$> go a <*> go b
+        TmLam s -> TmLam . toScope <$> go (fromScope s)
+        TmEmpty -> pure TmEmpty
+        TmExtend l -> pure $ TmExtend l
+        TmSelect l -> pure $ TmSelect l
+        TmRestrict l -> pure $ TmRestrict l
+        TmMatch l -> pure $ TmMatch l
+        TmInject l -> pure $ TmInject l
+        TmEmbed l -> pure $ TmEmbed l
+        TmInt n -> pure $ TmInt n
 
 instance Bifunctor Tm where
   bimap f g tm =
@@ -83,6 +113,7 @@ instance Bifunctor Tm where
       TmMatch l -> TmMatch l
       TmInject l -> TmInject l
       TmEmbed l -> TmEmbed l
+      TmInt n -> TmInt n
 
 instance Plated1 (Tm tyVar) where
   plate1 f = go
@@ -100,6 +131,7 @@ instance Plated1 (Tm tyVar) where
           TmMatch l -> pure $ TmMatch l
           TmInject l -> pure $ TmInject l
           TmEmbed l -> pure $ TmEmbed l
+          TmInt n -> pure $ TmInt n
 
 lam :: Eq a => a -> Tm tyVar a -> Tm tyVar a
 lam a = TmLam . abstract1 a

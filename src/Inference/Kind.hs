@@ -120,6 +120,8 @@ inferKindM _ _ TyRowExtend{} =
   pure $ KindArr KindType (KindArr KindRow KindRow)
 inferKindM _ _ TyOffset{} =
   pure $ KindArr KindRow KindConstraint
+inferKindM _ _ TyInt{} =
+  pure KindType
 
 inferDataDeclKind
   :: forall e a m

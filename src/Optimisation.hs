@@ -63,6 +63,7 @@ inline binds = go id Right
         TmMatch l -> pure $ TmMatch l
         TmInject l -> pure $ TmInject l
         TmEmbed l -> pure $ TmEmbed l
+        TmInt l -> pure $ TmInt l
 
 -- |
 -- @\\x -> f x ~~> f   when   notFreeIn(x, f)@

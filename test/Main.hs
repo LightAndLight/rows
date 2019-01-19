@@ -55,13 +55,13 @@ runInferDataDeclKind supply a b c d =
   runExcept $ evalStateT (inferDataDeclKind a b c d) supply
 
 runInferType
-  :: (Ord b, Show b)
+  :: (Ord b, Show b, Show c)
   => Supply
   -> (String -> Maybe (Kind Void)) -- ^ Type constructors
   -> (b -> Maybe (Kind Void)) -- ^ Type variables
   -> (c -> Either c (Ty b)) -- ^ Term variables
   -> Tm b c
-  -> Either (TypeError Int b c) (Forall b)
+  -> Either (TypeError Int b c) (Tm Void c, Forall b)
 runInferType supply a b c tm =
   runExcept $ inferType supply a b c tm
 
@@ -238,7 +238,11 @@ main = do
 
           `shouldBe`
 
-          Right (Forall 1 $ toScope $ TyApp (TyApp TyArr (TyVar (B 0))) (TyVar (B 0)))
+          Right
+          ( lam "x" $ pure "x"
+          , Forall 1 $ toScope $
+            tyArr (TyVar $ B 0) (TyVar $ B 0)
+          )
 
       it "|- (\\x y -> x) : forall a b. a -> b -> a" $ do
         let
@@ -260,9 +264,12 @@ main = do
           `shouldBe`
 
           Right
-            (Forall 2 $ toScope $
-             TyApp (TyApp TyArr (TyVar (B 0)))
-             (TyApp (TyApp TyArr (TyVar (B 1))) (TyVar (B 0))))
+            ( lam "x" $ lam "y" $ pure "x"
+            , Forall 2 $ toScope $
+              tyArr (TyVar (B 0)) $
+              tyArr (TyVar (B 1)) $
+              TyVar (B 0)
+            )
 
       it "(\\x -> x x) occurs error" $ do
         let
@@ -315,7 +322,7 @@ main = do
 
           Left (TypeMismatch (lift $ TyCtor "X") (lift $ TyCtor "Z"))
 
-      it "|- _.l : forall a r. Record (l : a | r) -> a" $ do
+      it "|- _.l : forall r a. (l | r) => Record (l : a | r) -> a" $ do
         let
           tyCtorCtx = const Nothing
 
@@ -335,12 +342,15 @@ main = do
           `shouldBe`
 
           Right
-            (forAll ["a", "r"] $
-             tyArr
-               (tyRecord $ tyRowExtend (Label "l") (pure "a") (pure "r"))
-               (pure "a"))
+            ( lam "offset" $ TmApp (TmSelect $ Label "l") (pure "offset")
+            , forAll ["r", "a"] $
+              tyConstraint (tyOffset (Label "l") (pure "r")) $
+              tyArr
+                (tyRecord $ tyRowExtend (Label "l") (pure "a") (pure "r"))
+                (pure "a")
+            )
 
-      it "|- (\\r -> r.f r.x) : forall a b r. Record (f : a -> b, x : a | r) -> b" $ do
+      it "|- (\\r -> r.f r.x) : forall a r b. (f | (x : a | r)) => (x | (f : a -> b | r)) => Record (f : a -> b, x : a | r) -> b" $ do
         let
           tyCtorCtx = const Nothing
 
@@ -357,21 +367,31 @@ main = do
           varCtx
           (lam "r" $
            TmApp
-             (TmApp (TmSelect $ Label "f") (pure "r"))
-             (TmApp (TmSelect $ Label "x") (pure "r")))
+             (tmSelect (pure "r") (Label "f"))
+             (tmSelect (pure "r") (Label "x")))
 
           `shouldBe`
 
           Right
-            (forAll ["a", "b", "r"] $
-             tyArr
-               (tyRecord $
-                tyRowExtend (Label "f") (tyArr (pure "a") (pure "b")) $
-                tyRowExtend (Label "x") (pure "a") $
-                (pure "r"))
-               (pure "b"))
+            ( lam "offset1" $ lam "offset2" $
+              lam "r" $
+              TmApp
+                (TmApp (TmApp (TmSelect $ Label "f") (pure "offset1")) (pure "r"))
+                (TmApp (TmApp (TmSelect $ Label "x") (pure "offset2")) (pure "r"))
+            , forAll ["a", "r", "b"] $
+              tyConstraint
+                (tyOffset (Label "f") (tyRowExtend (Label "x") (pure "a") (pure "r"))) $
+              tyConstraint
+                (tyOffset (Label "x") (tyRowExtend (Label "f") (tyArr (pure "a") (pure "b")) (pure "r"))) $
+              tyArr
+                (tyRecord $
+                 tyRowExtend (Label "f") (tyArr (pure "a") (pure "b")) $
+                 tyRowExtend (Label "x") (pure "a") $
+                 (pure "r"))
+                (pure "b")
+            )
 
-      it "r : Record (x : A, y : B) |- r.y : B" $ do
+      it "r : Record (x : A, y : B) |- (x | (y : B | ())) => r.y : B" $ do
         let
           tyCtorCtx x =
             case x of
@@ -398,11 +418,16 @@ main = do
           tyCtorCtx
           tyVarCtx
           varCtx
-          (TmApp (TmSelect $ Label "y") (pure "r"))
+          (tmSelect (pure "r") (Label "y"))
 
           `shouldBe`
 
-          Right (forAll [] $ TyCtor "B")
+          Right
+          ( lam "offset" $ TmApp (TmApp (TmSelect $ Label "y") (pure "offset")) (pure "r")
+          , forAll [] $
+            tyConstraint (tyOffset (Label "y") (tyRowExtend (Label "x") (TyCtor "A") TyRowEmpty)) $
+            TyCtor "B"
+          )
 
       it "r : Row, x : Record (x : A | r) -> A, y : Record (y : A | r) |/- x y : A" $ do
         let

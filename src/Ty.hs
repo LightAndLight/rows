@@ -63,6 +63,11 @@ data Ty a
   --
   -- @_ => _@
   | TyConstraint
+
+  -- | Integer
+  --
+  -- @Int@
+  | TyInt
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
 deriveEq1 ''Ty
 deriveOrd1 ''Ty
@@ -90,8 +95,17 @@ tyOffset :: Label -> Ty a -> Ty a
 tyOffset l = TyApp $ TyOffset l
 
 data Forall a
-  = Forall !Int (Scope Int Ty a)
-  deriving (Eq, Ord, Show)
+  = Forall
+  { _forallSize :: !Int
+  , _forallType :: Scope Int Ty a
+  } deriving (Eq, Show)
 
-forAll :: Ord a => [a] -> Ty a -> Forall a
-forAll as = Forall (Set.size $ Set.fromList as) . abstract (`elemIndex` as)
+forAll
+  :: Ord a
+  => [a]
+  -> Ty a
+  -> Forall a
+forAll as ty =
+  Forall
+    (Set.size $ Set.fromList as)
+    (abstract (`elemIndex` as) ty)

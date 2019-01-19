@@ -81,6 +81,7 @@ unifyKind x y = do
       else equate (KindVar x') k
     go KindType KindType = pure ()
     go KindRow KindRow = pure ()
+    go KindConstraint KindConstraint = pure ()
     go (KindArr x' y') (KindArr x'' y'') =
       unifyKind x' x'' *>
       unifyKind y' y''
@@ -97,6 +98,8 @@ inferKindM
   -> Ty a
   -> m (Kind Int)
 inferKindM _ _ TyArr = pure $ KindArr KindType (KindArr KindType KindType)
+inferKindM _ _ TyConstraint =
+  pure $ KindArr KindConstraint (KindArr KindType KindType)
 inferKindM ctorCtx _ (TyCtor s) =
   maybe (throwError $ _KindCtorNotFound # s) pure $ ctorCtx s
 inferKindM _ varCtx (TyVar x) =
@@ -115,6 +118,8 @@ inferKindM _ _ TyVariant =
   pure $ KindArr KindRow KindType
 inferKindM _ _ TyRowExtend{} =
   pure $ KindArr KindType (KindArr KindRow KindRow)
+inferKindM _ _ TyOffset{} =
+  pure $ KindArr KindRow KindConstraint
 
 inferDataDeclKind
   :: forall e a m

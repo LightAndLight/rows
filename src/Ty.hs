@@ -53,6 +53,16 @@ data Ty a
   --
   -- @Variant@
   | TyVariant
+
+  -- | Row offset
+  --
+  -- @(l | _)@
+  | TyOffset Label
+
+  -- | Constraint arrow
+  --
+  -- @_ => _@
+  | TyConstraint
   deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
 deriveEq1 ''Ty
 deriveOrd1 ''Ty
@@ -64,6 +74,9 @@ instance Plated (Ty a) where; plate = gplate
 tyArr :: Ty a -> Ty a -> Ty a
 tyArr a = TyApp $ TyApp TyArr a
 
+tyConstraint :: Ty a -> Ty a -> Ty a
+tyConstraint a = TyApp $ TyApp TyConstraint a
+
 tyRowExtend :: Label -> Ty a -> Ty a -> Ty a
 tyRowExtend l a = TyApp $ TyApp (TyRowExtend l) a
 
@@ -72,6 +85,9 @@ tyRecord = TyApp TyRecord
 
 tyVariant :: Ty a -> Ty a
 tyVariant = TyApp TyVariant
+
+tyOffset :: Label -> Ty a -> Ty a
+tyOffset l = TyApp $ TyOffset l
 
 data Forall a
   = Forall !Int (Scope Int Ty a)

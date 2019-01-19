@@ -70,6 +70,11 @@ data Tm tyVar a
   --
   -- @0@
   | TmInt !Int
+
+  -- | Integer addition
+  --
+  -- @_ + _@
+  | TmAdd (Tm tyVar a) (Tm tyVar a)
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Tm
 deriveShow1 ''Tm
@@ -89,6 +94,7 @@ traverseTy f = go
         TmAnn a b -> TmAnn <$> go a <*> f b
         TmVar a -> pure $ TmVar a
         TmApp a b -> TmApp <$> go a <*> go b
+        TmAdd a b -> TmAdd <$> go a <*> go b
         TmLam s -> TmLam . toScope <$> go (fromScope s)
         TmEmpty -> pure TmEmpty
         TmExtend l -> pure $ TmExtend l
@@ -105,6 +111,7 @@ instance Bifunctor Tm where
       TmAnn a b -> TmAnn (bimap f g a) (fmap f b)
       TmVar a -> TmVar $ g a
       TmApp a b -> TmApp (bimap f g a) (bimap f g b)
+      TmAdd a b -> TmAdd (bimap f g a) (bimap f g b)
       TmLam s -> TmLam . hoistScope (first f) $ fmap g s
       TmEmpty -> TmEmpty
       TmExtend l -> TmExtend l
@@ -123,6 +130,7 @@ instance Plated1 (Tm tyVar) where
           TmAnn a b -> (\a' -> TmAnn a' b) <$> f a
           TmVar a -> pure $ TmVar a
           TmApp a b -> TmApp <$> f a <*> f b
+          TmAdd a b -> TmAdd <$> f a <*> f b
           TmLam s -> TmLam . toScope <$> f (fromScope s)
           TmEmpty -> pure TmEmpty
           TmExtend l -> pure $ TmExtend l

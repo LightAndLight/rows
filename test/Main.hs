@@ -219,7 +219,7 @@ main = do
 
           Left (KindOccurs 0 (KindArr (KindVar 0) (KindVar 1)))
     describe "Types" $ do
-      it "|- (\\x -> x) : forall a. a -> a" $ do
+      it "1) |- (\\x -> x) : forall a. a -> a" $ do
         let
           tyCtorCtx = const Nothing
 
@@ -244,7 +244,7 @@ main = do
             tyArr (TyVar $ B 0) (TyVar $ B 0)
           )
 
-      it "|- (\\x y -> x) : forall a b. a -> b -> a" $ do
+      it "2) |- (\\x y -> x) : forall a b. a -> b -> a" $ do
         let
           tyCtorCtx = const Nothing
 
@@ -271,7 +271,7 @@ main = do
               TyVar (B 0)
             )
 
-      it "(\\x -> x x) occurs error" $ do
+      it "3) (\\x -> x x) occurs error" $ do
         let
           tyCtorCtx = const Nothing
 
@@ -292,7 +292,7 @@ main = do
 
           Left (TypeOccurs 0 (MetaT $ TyApp (TyApp TyArr (TyVar (M 0))) (TyVar (M 1))))
 
-      it "f : X -> Y, x : Z |/- f x : Y" $ do
+      it "4) f : X -> Y, x : Z |/- f x : Y" $ do
         let
           tyCtorCtx x =
             case x of
@@ -322,7 +322,7 @@ main = do
 
           Left (TypeMismatch (lift $ TyCtor "X") (lift $ TyCtor "Z"))
 
-      it "|- _.l : forall r a. (l | r) => Record (l : a | r) -> a" $ do
+      it "5) |- _.l : forall r a. (l | r) => Record (l : a | r) -> a" $ do
         let
           tyCtorCtx = const Nothing
 
@@ -350,7 +350,7 @@ main = do
                 (pure "a")
             )
 
-      it "|- (\\r -> r.f r.x) : forall a r b. (f | (x : a | r)) => (x | (f : a -> b | r)) => Record (f : a -> b, x : a | r) -> b" $ do
+      it "6) |- (\\r -> r.f r.x) : forall a r b. (f | r) => (x | r) => Record (f : a -> b, x : a | r) -> b" $ do
         let
           tyCtorCtx = const Nothing
 
@@ -377,12 +377,12 @@ main = do
               lam "r" $
               TmApp
                 (TmApp (TmApp (TmSelect $ Label "f") (pure "offset1")) (pure "r"))
-                (TmApp (TmApp (TmSelect $ Label "x") (pure "offset2")) (pure "r"))
-            , forAll ["a", "r", "b"] $
+                (TmApp (TmApp (TmSelect $ Label "x") (TmAdd (TmInt 1) (pure "offset2"))) (pure "r"))
+            , forAll ["r", "a", "b"] $
               tyConstraint
-                (tyOffset (Label "f") (tyRowExtend (Label "x") (pure "a") (pure "r"))) $
+                (tyOffset (Label "f") (pure "r")) $
               tyConstraint
-                (tyOffset (Label "x") (tyRowExtend (Label "f") (tyArr (pure "a") (pure "b")) (pure "r"))) $
+                (tyOffset (Label "x") (pure "r")) $
               tyArr
                 (tyRecord $
                  tyRowExtend (Label "f") (tyArr (pure "a") (pure "b")) $
@@ -391,7 +391,7 @@ main = do
                 (pure "b")
             )
 
-      it "r : Record (x : A, y : B) |- (x | (y : B | ())) => r.y : B" $ do
+      it "7) r : Record (x : A, y : B) |- _.l 1 r : B" $ do
         let
           tyCtorCtx x =
             case x of
@@ -423,13 +423,11 @@ main = do
           `shouldBe`
 
           Right
-          ( lam "offset" $ TmApp (TmApp (TmSelect $ Label "y") (pure "offset")) (pure "r")
-          , forAll [] $
-            tyConstraint (tyOffset (Label "y") (tyRowExtend (Label "x") (TyCtor "A") TyRowEmpty)) $
-            TyCtor "B"
+          ( TmApp (TmApp (TmSelect $ Label "y") (TmAdd (TmInt 1) (TmInt 0))) (pure "r")
+          , forAll [] $ TyCtor "B"
           )
 
-      it "r : Row, x : Record (x : A | r) -> A, y : Record (y : A | r) |/- x y : A" $ do
+      it "8) r : Row, x : Record (x : A | r) -> A, y : Record (y : A | r) |/- x y : A" $ do
         let
           tyCtorCtx x =
             case x of
@@ -469,7 +467,7 @@ main = do
              (lift $ tyRowExtend (Label "x") (TyCtor "A") $ pure "r")
              (lift $ tyRowExtend (Label "y") (TyCtor "A") $ pure "r"))
 
-      it "r : Row, x : Record (x : A, y : B | r) -> A, y : Record (y : A, X : B | r) |/- x y : A" $ do
+      it "9) r : Row, x : Record (x : A, y : B | r) -> A, y : Record (y : A, X : B | r) |/- x y : A" $ do
         let
           tyCtorCtx x =
             case x of
@@ -515,6 +513,80 @@ main = do
           (TypeMismatch
              (lift $ TyCtor "A")
              (lift $ TyCtor "B"))
+
+      it "10) r : Record (x : A, y : B) |- _.x 0 r : A" $ do
+        let
+          tyCtorCtx x =
+            case x of
+              "A" -> Just KindType
+              "B" -> Just KindType
+              _ -> Nothing
+
+          tyVarCtx :: String -> Maybe (Kind Void)
+          tyVarCtx = const Nothing
+
+          varCtx :: String -> Either String (Ty tyVar)
+          varCtx x =
+            case x of
+              "r" ->
+                Right $
+                tyRecord $
+                tyRowExtend (Label "x") (TyCtor "A") $
+                tyRowExtend (Label "y") (TyCtor "B") $
+                TyRowEmpty
+              _ -> Left x
+
+        runInferType
+          supply
+          tyCtorCtx
+          tyVarCtx
+          varCtx
+          (tmSelect (pure "r") (Label "x"))
+
+          `shouldBe`
+
+          Right
+          ( TmApp (TmApp (TmSelect $ Label "x") (TmInt 0)) (pure "r")
+          , forAll [] $ TyCtor "A"
+          )
+
+      it "11) |- (\\r -> r.f r.x) *{ f = \\x -> x, 99 } : Int" $ do
+        let
+          tyCtorCtx = const Nothing
+
+          tyVarCtx :: String -> Maybe (Kind Void)
+          tyVarCtx = const Nothing
+
+          varCtx :: String -> Either String (Ty tyVar)
+          varCtx x = Left x
+
+        runInferType
+          supply
+          tyCtorCtx
+          tyVarCtx
+          varCtx
+          (TmApp
+             (lam "r" $
+              TmApp
+                (tmSelect (pure "r") (Label "f"))
+                (tmSelect (pure "r") (Label "x")))
+             (tmExtend (Label "f") (lam "x" $ pure "x") $
+              tmExtend (Label "x") (TmInt 99) $
+              TmEmpty))
+
+          `shouldBe`
+
+          Right
+            ( TmApp
+                (lam "r" $
+                 TmApp
+                   (TmApp (TmApp (TmSelect $ Label "f") (TmInt 0)) (pure "r"))
+                   (TmApp (TmApp (TmSelect $ Label "x") (TmAdd (TmInt 1) (TmInt 0))) (pure "r")))
+                (TmApp (TmApp (TmApp (TmExtend $ Label "f") (TmInt 0)) (lam "x" $ pure "x")) $
+                 TmApp (TmApp (TmApp (TmExtend $ Label "x") (TmInt 0)) (TmInt 99)) $
+                 TmEmpty)
+            , forAll [] TyInt
+            )
     describe "Parse" $ do
       describe "Term" $ do
         testParseTmSuccess "x" (pure "x")

@@ -53,6 +53,7 @@ inline binds = go id Right
                 else pure $ ctx <$> binds x
         TmAnn a b -> (\a' -> TmAnn a' b) <$> go ctx toVar a
         TmApp a b -> TmApp <$> go ctx toVar a <*> go ctx toVar b
+        TmAdd a b -> TmAdd <$> go ctx toVar a <*> go ctx toVar b
         TmLam s ->
           TmLam . toScope <$>
           go (F . ctx) (unvar (Left . B) (first F . toVar)) (fromScope s)
@@ -113,4 +114,10 @@ variantElim tm =
         case rest of
           TmLam fRest -> variantElim $ instantiate1 (tmInject l' a) fRest
           _ -> Just $ TmApp rest (tmInject l' a)
+    _ -> Nothing
+
+foldInts :: Tm ty a -> Maybe (Tm ty a)
+foldInts tm =
+  case tm of
+    TmAdd (TmInt a) (TmInt b) -> Just $ TmInt (a + b)
     _ -> Nothing

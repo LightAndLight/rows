@@ -390,12 +390,6 @@ stripConstraints =
         TyConstraint -> pure ty
         TyInt -> pure ty
 
-findM :: (Foldable f, Monad m) => (a -> m Bool) -> f a -> m (Maybe a)
-findM p =
-  foldr
-    (\a b -> p a >>= \x -> if x then pure (Just a) else b)
-    (pure Nothing)
-
 applyEvidence
   :: ( MonadState (InferState Int tyVar Int) m
      , MonadError (TypeError Int tyVar tmVar) m
@@ -495,8 +489,9 @@ inferTypeM ctx tyCtorCtx varCtx tm =
       metaA <- TyVar <$> newMeta KindType
       metaB <- TyVar <$> newMeta KindType
       metaRow <- TyVar <$> newMeta KindRow
+      tm' <- applyEvidence [MetaT $ tyOffset l metaRow] tm
       pure
-        ( tm
+        ( tm'
         , MetaT $
           tyArr (tyVariant (tyRowExtend l metaA metaRow)) $
           tyArr (tyArr metaA metaB) $
@@ -506,16 +501,18 @@ inferTypeM ctx tyCtorCtx varCtx tm =
     TmInject l -> do
       metaTy <- TyVar <$> newMeta KindType
       metaRow <- TyVar <$> newMeta KindRow
+      tm' <- applyEvidence [MetaT $ tyOffset l metaRow] tm
       pure
-        ( tm
+        ( tm'
         , MetaT $
           tyArr metaTy (tyVariant $ tyRowExtend l metaTy metaRow)
         )
     TmEmbed l -> do
       metaTy <- TyVar <$> newMeta KindType
       metaRow <- TyVar <$> newMeta KindRow
+      tm' <- applyEvidence [MetaT $ tyOffset l metaRow] tm
       pure
-        ( tm
+        ( tm'
         , MetaT $
           tyArr metaRow (tyVariant $ tyRowExtend l metaTy metaRow)
         )

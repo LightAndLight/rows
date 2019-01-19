@@ -119,5 +119,15 @@ variantElim tm =
 foldInts :: Tm ty a -> Maybe (Tm ty a)
 foldInts tm =
   case tm of
+    -- reduction
     TmAdd (TmInt a) (TmInt b) -> Just $ TmInt (a + b)
+
+    -- identity
+    TmAdd (TmInt 0) a -> Just a
+    TmAdd a (TmInt 0) -> Just a
+
+    -- associativity
+    TmAdd (TmInt a) (TmAdd (TmInt b) c) -> Just $ TmAdd (TmInt (a + b)) c
+    TmAdd (TmAdd a (TmInt b)) (TmInt c) -> Just $ TmAdd a (TmInt (b + c))
+
     _ -> Nothing

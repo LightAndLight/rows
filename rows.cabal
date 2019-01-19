@@ -47,6 +47,12 @@ library
 
 test-suite rows-tests
   type:                exitcode-stdio-1.0
+  other-modules:       Test.Desugar
+                     , Test.Kinds
+                     , Test.Optimise
+                     , Test.Parse
+                     , Test.ParseTypes
+                     , Test.Types
   hs-source-dirs:      test
   build-depends:       base <5
                      , bound

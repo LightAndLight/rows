@@ -24,8 +24,13 @@ library
                      , Ty
                      , Kind
                      , Meta
+                     , Inference.Evidence
                      , Inference.Kind
+                     , Inference.Kind.Error
+                     , Inference.State
                      , Inference.Type
+                     , Inference.Type.Row
+                     , Inference.Type.Error
                      , Label
                      , Optimisation
                      , Parser

@@ -1,17 +1,22 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable, DeriveGeneric #-}
+{-# language FlexibleContexts #-}
 {-# language TemplateHaskell #-}
 module Ty where
 
 import Bound.Scope (Scope, abstract)
 import Bound.TH (makeBound)
 import Control.Lens.Plated (Plated(..), gplate)
+import Control.Lens.Wrapped (_Wrapped, _Unwrapped)
+import Control.Monad ((<=<))
 import Data.Deriving (deriveEq1, deriveOrd1, deriveShow1)
+import Data.Equivalence.Monad (MonadEquiv, classDesc)
 import Data.List (elemIndex)
 import GHC.Generics (Generic)
 
 import qualified Data.Set as Set
 
 import Label
+import Meta
 
 data Ty a
   -- | Arrow type
@@ -93,6 +98,31 @@ tyVariant = TyApp TyVariant
 
 tyOffset :: Label -> Ty a -> Ty a
 tyOffset l = TyApp $ TyOffset l
+
+stripConstraints :: Ty a -> (Ty a, [Ty a])
+stripConstraints ty =
+  -- if we introduce first-class polymorphism, then we can't float
+  -- constraints from under a forall
+    case ty of
+      TyApp (TyApp TyConstraint c) rest -> (c :) <$> stripConstraints rest
+      TyApp{} -> (ty, [])
+      TyArr -> (ty, [])
+      TyCtor{} -> (ty, [])
+      TyVar{} -> (ty, [])
+      TyRowEmpty -> (ty, [])
+      TyRowExtend{} -> (ty, [])
+      TyRecord -> (ty, [])
+      TyVariant -> (ty, [])
+      TyOffset{} -> (ty, [])
+      TyConstraint -> (ty, [])
+      TyInt -> (ty, [])
+
+findType
+  :: MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
+  => MetaT Int Ty tyVar -> m (MetaT Int Ty tyVar)
+findType = _Wrapped go
+  where
+    go = plate go <=< _Unwrapped classDesc
 
 data Forall a
   = Forall

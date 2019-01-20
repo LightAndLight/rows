@@ -9,6 +9,7 @@ import Control.Monad.Trans.Class (lift)
 import Data.Void (Void)
 
 import Inference.Type
+import Inference.Type.Error
 import Kind
 import Label
 import Meta

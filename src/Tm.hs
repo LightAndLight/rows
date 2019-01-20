@@ -12,6 +12,7 @@ import Data.Bifunctor (Bifunctor(..))
 import Data.Deriving (deriveEq1, deriveShow1)
 import Data.Functor.Const (Const(..))
 import Data.Generics.Plated1 (Plated1(..))
+import Data.Void (Void)
 
 import Label
 import Ty
@@ -204,3 +205,20 @@ selectFrom l = go
 
 deriving instance (Eq tyVar, Eq a) => Eq (Tm tyVar a)
 deriving instance (Show tyVar, Show a) => Show (Tm tyVar a)
+
+stripAnnots :: Tm tyVar tmVar -> Tm Void tmVar
+stripAnnots tm =
+  case tm of
+    TmAnn a _ -> stripAnnots a
+    TmVar a -> TmVar a
+    TmApp a b -> TmApp (stripAnnots a) (stripAnnots b)
+    TmAdd a b -> TmAdd (stripAnnots a) (stripAnnots b)
+    TmLam s -> TmLam . toScope . stripAnnots $ fromScope s
+    TmEmpty -> TmEmpty
+    TmExtend l -> TmExtend l
+    TmSelect l -> TmSelect l
+    TmRestrict l -> TmRestrict l
+    TmMatch l -> TmMatch l
+    TmInject l -> TmInject l
+    TmEmbed l -> TmEmbed l
+    TmInt n -> TmInt n

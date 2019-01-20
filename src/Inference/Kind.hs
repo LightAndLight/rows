@@ -11,7 +11,6 @@ import Control.Applicative ((<|>))
 import Control.Concurrent.Supply (Supply, freshId)
 import Control.Lens.Plated (plate)
 import Control.Lens.Review ((#))
-import Control.Lens.TH (makeClassyPrisms)
 import Control.Lens.Traversal (traverseOf)
 import Control.Monad ((<=<))
 import Control.Monad.Except (MonadError, throwError)
@@ -21,16 +20,9 @@ import Data.Foldable (for_)
 import Data.Traversable (for)
 import Data.Void (Void, absurd)
 
+import Inference.Kind.Error
 import Kind
 import Ty
-
-data KindError a
-  = KindOccurs Int (Kind Int)
-  | KindMismatch (Kind Int) (Kind Int)
-  | KindVarNotFound a
-  | KindCtorNotFound String
-  deriving (Eq, Show)
-makeClassyPrisms ''KindError
 
 occursKind :: Eq meta => meta -> Kind meta -> Bool
 occursKind v = foldr (\a b -> a == v || b) False

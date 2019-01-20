@@ -8,6 +8,7 @@ import Control.Monad.State (evalStateT)
 import Data.Void (Void)
 
 import Inference.Kind
+import Inference.Kind.Error
 import Kind
 import Label
 import Ty

@@ -7,83 +7,34 @@
 {-# language RankNTypes #-}
 module Inference.Type where
 
-import Bound.Scope (abstract, abstractEither, fromScope, toScope)
+import Bound.Scope (abstractEither, fromScope, toScope)
 import Bound.Var (Var(..), unvar)
-import Control.Applicative ((<|>))
-import Control.Concurrent.Supply (Supply, freshId)
-import Control.Lens.Getter (use, uses)
-import Control.Lens.TH (makeClassyPrisms, makeLenses)
-import Control.Lens.Plated (plate)
+import Control.Concurrent.Supply (Supply)
+import Control.Lens.Getter (use)
 import Control.Lens.Review ((#))
-import Control.Lens.Setter ((%=), (.=))
-import Control.Lens.Traversal (traverseOf)
-import Control.Lens.Wrapped (_Wrapped, _Unwrapped)
-import Control.Monad ((<=<))
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.State (MonadState, State, runState, evalStateT, modify)
+import Control.Monad.State (MonadState, evalStateT)
 import Control.Monad.Trans.Class (lift)
-import Control.Monad.Writer.Strict (WriterT, runWriterT, tell)
+import Control.Monad.Writer.Strict (runWriterT)
 import Data.Bifunctor (first)
-import Data.Either (partitionEithers)
-import Data.Equivalence.Monad (MonadEquiv, equate, classDesc, runEquivT)
-import Data.Foldable (toList)
+import Data.Coerce (coerce)
+import Data.Equivalence.Monad (MonadEquiv, equate, runEquivT)
 import Data.List (elemIndex)
 import Data.Maybe (fromJust)
-import Data.Sequence ((|>), Seq)
-import Data.Traversable (for)
 import Data.Void (Void, absurd)
 
-import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 
 import Evidence
+import Inference.Evidence
 import Inference.Kind
+import Inference.State
+import Inference.Type.Error
+import Inference.Type.Row
 import Kind
-import Label
 import Meta
 import Tm
 import Ty
-
-data EvEntry a b c
-  = EvEntry c (MetaT a Ty b)
-
-data InferState a b c
-  = InferState
-  { _inferSupply :: Supply
-  , _inferEvidence :: Seq (EvEntry a b c)
-  , _inferKinds :: Meta a b -> Maybe (Kind Void)
-  }
-makeLenses ''InferState
-
-newEv :: MonadState (InferState a b Int) m => MetaT a Ty b -> m (Ev Int x)
-newEv ty = do
-  (v, supply') <- uses inferSupply freshId
-  inferSupply .= supply'
-  inferEvidence %= (|> EvEntry v ty)
-  pure $ E v
-
-newMeta :: MonadState (InferState Int b c) m => Kind Void -> m (Meta Int b)
-newMeta kind = do
-  (v, supply') <- uses inferSupply freshId
-  inferSupply .= supply'
-  inferKinds %=
-    \f x ->
-      f x <|>
-      foldMeta (\y -> if y == v then Just kind else Nothing) (const Nothing) x
-  pure $ M v
-
-data TypeError a b c
-  = TypeOccurs a (MetaT a Ty b)
-  | TypeMismatch (MetaT a Ty b) (MetaT a Ty b)
-  | TypeVarNotFound c
-  | TypeKindMismatch (MetaT a Ty b) (Kind Void) (MetaT a Ty b) (Kind Void)
-  | TypeCannotDeduce (MetaT a Ty b)
-  | TypeKindError (KindError (Meta Int b))
-  deriving (Eq, Show)
-makeClassyPrisms ''TypeError
-
-instance AsKindError (TypeError a b c) (Meta Int b) where
-  _KindError = _TypeKindError
 
 occursType :: Eq meta => meta -> MetaT meta Ty a -> Bool
 occursType v =
@@ -91,44 +42,6 @@ occursType v =
     (\a b -> foldMeta (== v) (const False) a || b)
     False .
     unMetaT
-
-rowTail :: Show a => Ty (Meta Int a) -> Ty (Meta Int a)
-rowTail (TyApp (TyApp TyRowExtend{} _) r) = r
-rowTail (TyVar v) = TyVar v
-rowTail TyRowEmpty = TyRowEmpty
-rowTail a = error $ "rowTail: can't get tail of:\n\n" <> show a
-
-rewriteRow
-  :: ( MonadError (TypeError Int tyVar tmVar) m
-     , MonadState (InferState Int tyVar ev) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Eq tyVar, Show tyVar
-     )
-  => (String -> Maybe (Kind Void))
-  -> Ty (Meta Int tyVar) -- ^ row tail
-  -> Label -- ^ desired label
-  -> Ty (Meta Int tyVar) -- ^ term to rewrite
-  -> m (Maybe (Label, Ty (Meta Int tyVar), Ty (Meta Int tyVar)))
-rewriteRow tyCtorCtx rt ll ty =
-  case ty of
-    TyApp (TyApp (TyRowExtend l) t) r ->
-      if ll == l
-      then -- row-head
-        pure $ Just (l, t, r)
-      else do -- row-swap
-        res <- rewriteRow tyCtorCtx rt ll r
-        pure $ case res of
-          Just (l', t', r') -> Just (l', t', tyRowExtend l t r')
-          Nothing -> Nothing
-    TyVar M{} -> -- row-var
-      if ty == rt
-      then error "infinite record"
-      else do
-        metaTy <- TyVar <$> newMeta KindType
-        metaRow <- TyVar <$> newMeta KindRow
-        equate (MetaT ty) (MetaT $ tyRowExtend ll metaTy metaRow)
-        pure $ Just (ll, metaTy, metaRow)
-    _ -> pure Nothing
 
 combineType
   :: (Show a, Show b, Ord a, Eq b)
@@ -207,14 +120,6 @@ unifyType tyCtorCtx x y = do
       else equate (MetaT ty) (MetaT ty')
     go l m = throwError $ TypeMismatch (MetaT l) (MetaT m)
 
-findType
-  :: MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-  => MetaT Int Ty tyVar
-  -> m (MetaT Int Ty tyVar)
-findType = _Wrapped go
-  where
-    go = traverseOf plate go <=< _Unwrapped classDesc
-
 generalize :: MetaT Int Ty tyVar -> Forall tyVar
 generalize (MetaT t) =
   Forall (Set.size uniq) $
@@ -236,113 +141,6 @@ generalize (MetaT t) =
         (Set.empty, [])
         t
 
-stripAnnots :: Tm tyVar tmVar -> Tm Void tmVar
-stripAnnots tm =
-  case tm of
-    TmAnn a _ -> stripAnnots a
-    TmVar a -> TmVar a
-    TmApp a b -> TmApp (stripAnnots a) (stripAnnots b)
-    TmAdd a b -> TmAdd (stripAnnots a) (stripAnnots b)
-    TmLam s -> TmLam . toScope . stripAnnots $ fromScope s
-    TmEmpty -> TmEmpty
-    TmExtend l -> TmExtend l
-    TmSelect l -> TmSelect l
-    TmRestrict l -> TmRestrict l
-    TmMatch l -> TmMatch l
-    TmInject l -> TmInject l
-    TmEmbed l -> TmEmbed l
-    TmInt n -> TmInt n
-
-evidenceFor
-  :: ( MonadState (InferState Int tyVar Int) m
-     , MonadError (TypeError Int tyVar tmVar) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Show tyVar
-     )
-  => MetaT Int Ty tyVar
-  -> WriterT
-       (Seq (EvEntry Int tyVar Int))
-       m
-       (Maybe (EvT Int (Tm (Meta Int tyVar)) x))
-evidenceFor ty = do
-  ty' <- lift $ findType ty
-  case unMetaT ty' of
-    TyApp TyOffset{} TyRowEmpty -> pure . Just . EvT $ TmInt 0
-    TyApp (TyOffset l) (TyApp (TyApp (TyRowExtend l') _) rest) -> do
-      let super = MetaT $ TyApp (TyOffset l) rest
-      res <- evidenceFor super
-      e <-
-        maybe
-          (do
-              e' <- newEv super
-              tell [EvEntry (foldEv id undefined e') super]
-              pure $ TmVar e')
-          (pure . unEvT)
-          res
-      pure . Just . EvT $
-        if l < l'
-        then e
-        else TmAdd (TmInt 1) e
-    _ -> pure Nothing
-
-getEvidence
-  :: forall tyVar tmVar c m x
-   . ( MonadState (InferState Int tyVar Int) m
-     , MonadError (TypeError Int tyVar tmVar) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Show tyVar
-     )
-  => m
-       ( [(Int, EvT Int (Tm (Meta Int tyVar)) x)]
-       , [(Int, MetaT Int Ty tyVar)]
-       )
-getEvidence = use inferEvidence >>= go
-  where
-    go
-      :: Seq (EvEntry Int tyVar Int)
-      -> m
-           ( [(Int, EvT Int (Tm (Meta Int tyVar)) x)]
-           , [(Int, MetaT Int Ty tyVar)]
-           )
-    go evs | Seq.null evs = pure mempty
-    go evs = do
-      (evs', more) <-
-        runWriterT $
-        for evs $ \(EvEntry e ty) ->
-          maybe (Right (e, ty)) (Left . (,) e) <$> evidenceFor ty
-      (partitionEithers (toList evs') <>) <$> go more
-
-finalizeEvidence
-  :: forall tyVar tmVar c x m
-   . ( MonadState (InferState Int tyVar Int) m
-     , MonadError (TypeError Int tyVar tmVar) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Eq tyVar
-     , Show tyVar, Show tmVar
-     , Show x
-     )
-  => Tm (Meta Int tyVar) (Ev Int x)
-  -> m (Tm (Meta Int tyVar) x, [MetaT Int Ty tyVar])
-finalizeEvidence tm = do
-  (sat, unsat) <- getEvidence
-  let
-    (unsatVals, unsatTypes) = unzip unsat
-    tm' = tm >>= foldEv (\x -> maybe (pure $ E x) unEvT $ lookup x sat) (pure . V)
-    tm'' =
-      foldr
-        (\a ->
-           TmLam .
-           abstract
-             (foldEv
-                (\x -> if x == a then Just () else Nothing)
-                (const Nothing)))
-        tm'
-        unsatVals
-  either
-    (\x -> error $ "un-abstracted evidence: " <> show x <> "\n\n" <> show unsatVals)
-    (\x -> pure (x, unsatTypes))
-    (traverse (foldEv Left Right) tm'')
-
 generalizeType
   :: forall tyVar tmVar c x m
    . ( MonadState (InferState Int tyVar Int) m
@@ -360,35 +158,6 @@ generalizeType (EvT tm, MetaT ty) = do
     generalize <$>
     findType (MetaT $ foldr (tyConstraint . unMetaT) ty constraints)
   pure (stripAnnots tm', ty')
-
-stripConstraints
-  :: forall a b
-   . MetaT b Ty a
-  -> (MetaT b Ty a, [MetaT b Ty a])
-stripConstraints =
-  flip runState mempty . _Wrapped go
-  where
-    go
-      :: Ty (Meta b a)
-      -> State [MetaT b Ty a] (Ty (Meta b a))
-    go ty =
-      -- if we introduce first-class polymorphism, then we can't float
-      -- constraints from under a forall
-      case ty of
-        TyApp (TyApp TyConstraint c) rest -> do
-          modify $ (MetaT c :)
-          go rest
-        TyApp{} -> pure ty
-        TyArr -> pure ty
-        TyCtor{} -> pure ty
-        TyVar{} -> pure ty
-        TyRowEmpty -> pure ty
-        TyRowExtend{} -> pure ty
-        TyRecord -> pure ty
-        TyVariant -> pure ty
-        TyOffset{} -> pure ty
-        TyConstraint -> pure ty
-        TyInt -> pure ty
 
 applyEvidence
   :: ( MonadState (InferState Int tyVar Int) m
@@ -425,7 +194,7 @@ inferTypeM ctx tyCtorCtx varCtx tm =
     TmVar E{} -> error "trying to infer type for evidence variable"
     TmVar (V a) -> do
       ty <- either (throwError . TypeVarNotFound) pure $ varCtx a
-      let (ty', constraints) = stripConstraints ty
+      let (ty', constraints) = coerce (stripConstraints $ unMetaT ty)
       tm' <- applyEvidence constraints tm
       pure (tm', ty')
     TmApp a b -> do

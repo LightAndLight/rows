@@ -54,10 +54,10 @@ inline binds = go id Right
         TmAnn a b -> (\a' -> TmAnn a' b) <$> go ctx toVar a
         TmApp a b -> TmApp <$> go ctx toVar a <*> go ctx toVar b
         TmAdd a b -> TmAdd <$> go ctx toVar a <*> go ctx toVar b
+        TmRecord a -> TmRecord <$> traverse (traverse (go ctx toVar)) a
         TmLam s ->
           TmLam . toScope <$>
           go (F . ctx) (unvar (Left . B) (first F . toVar)) (fromScope s)
-        TmEmpty -> pure TmEmpty
         TmExtend l -> pure $ TmExtend l
         TmSelect l -> pure $ TmSelect l
         TmRestrict l -> pure $ TmRestrict l

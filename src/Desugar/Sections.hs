@@ -8,19 +8,23 @@ import Bound.Var (Var(..), unvar)
 
 import Syntax
 
-merge :: (Int, Syn tyVar a) -> (Int, Syn tyVar a) -> (Int, Syn tyVar a)
-merge (0, x) (0, y) = (0, SynApp x y)
-merge (0, x) (!n, SynLam (fromScope -> s)) =
+mergeWith
+  :: (forall x. Syn tyVar x -> Syn tyVar x -> Syn tyVar x)
+  -> (Int, Syn tyVar a)
+  -> (Int, Syn tyVar a)
+  -> (Int, Syn tyVar a)
+mergeWith f (0, x) (0, y) = (0, f x y)
+mergeWith f (0, x) (!n, SynLam (fromScope -> s)) =
   let
-    (n', tm) = merge (0, F <$> x) (n-1, s)
+    (n', tm) = mergeWith f (0, F <$> x) (n-1, s)
   in
     (n'+1, SynLam $ toScope tm)
-merge (!m, SynLam (fromScope -> s)) (!n, y) =
+mergeWith f (!m, SynLam (fromScope -> s)) (!n, y) =
   let
-    (m', tm) = merge (m-1, s) (n, F <$> y)
+    (m', tm) = mergeWith f (m-1, s) (n, F <$> y)
   in
     (m'+1, SynLam $ toScope tm)
-merge _ _ = error "merge: invalid arguments"
+mergeWith _ _ _ = error "mergeWith: invalid arguments"
 
 shunt
   :: (forall x. Syn tyVar x -> Syn tyVar x)
@@ -53,10 +57,15 @@ makeSections = snd . go
     go syn =
       case syn of
         SynUnknown -> (1, SynLam $ toScope $ pure (B ()))
-        SynApp a b -> merge (go a) (go b)
+        SynApp a b -> mergeWith SynApp (go a) (go b)
         SynAnn a b -> shunt (\x -> SynAnn x b) (go a)
+        SynRecord ((l, v) : vs) ->
+          mergeWith
+            (\v' (SynRecord vs') -> SynRecord $ (l, v') : vs')
+            (go v)
+            (go (SynRecord vs))
+        SynRecord [] -> (0, syn)
         SynVar{} -> (0, syn)
-        SynEmpty -> (0, syn)
         SynExtend{} -> (0, syn)
         SynSelect{} -> (0, syn)
         SynRestrict{} -> (0, syn)

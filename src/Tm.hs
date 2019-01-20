@@ -34,11 +34,6 @@ data Tm tyVar a
   -- @\x -> x@
   | TmLam (Scope () (Tm tyVar) a)
 
-  -- | Empty record
-  --
-  -- @*{}@
-  | TmEmpty
-
   -- | Record extension
   --
   -- @*{ l = _ | _ }@
@@ -78,6 +73,11 @@ data Tm tyVar a
   --
   -- @_ + _@
   | TmAdd (Tm tyVar a) (Tm tyVar a)
+
+  -- | Record literal
+  --
+  -- @{ x1 = _, x2 = _, ..., xn = _ }@
+  | TmRecord [(Label, Tm tyVar a)]
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Tm
 deriveShow1 ''Tm
@@ -99,7 +99,7 @@ traverseTy f = go
         TmApp a b -> TmApp <$> go a <*> go b
         TmAdd a b -> TmAdd <$> go a <*> go b
         TmLam s -> TmLam . toScope <$> go (fromScope s)
-        TmEmpty -> pure TmEmpty
+        TmRecord a -> TmRecord <$> traverse (traverse go) a
         TmExtend l -> pure $ TmExtend l
         TmSelect l -> pure $ TmSelect l
         TmRestrict l -> pure $ TmRestrict l
@@ -116,7 +116,7 @@ instance Bifunctor Tm where
       TmApp a b -> TmApp (bimap f g a) (bimap f g b)
       TmAdd a b -> TmAdd (bimap f g a) (bimap f g b)
       TmLam s -> TmLam . hoistScope (first f) $ fmap g s
-      TmEmpty -> TmEmpty
+      TmRecord a -> TmRecord $ fmap (fmap (bimap f g)) a
       TmExtend l -> TmExtend l
       TmSelect l -> TmSelect l
       TmRestrict l -> TmRestrict l
@@ -135,7 +135,7 @@ instance Plated1 (Tm tyVar) where
           TmApp a b -> TmApp <$> f a <*> f b
           TmAdd a b -> TmAdd <$> f a <*> f b
           TmLam s -> TmLam . toScope <$> f (fromScope s)
-          TmEmpty -> pure TmEmpty
+          TmRecord a -> TmRecord <$> traverse (traverse f) a
           TmExtend l -> pure $ TmExtend l
           TmSelect l -> pure $ TmSelect l
           TmRestrict l -> pure $ TmRestrict l
@@ -157,8 +157,8 @@ traverseTmLeaves f = go
         TmApp a b -> TmApp <$> go a <*> go b
         TmAdd a b -> TmAdd <$> go a <*> go b
         TmLam s -> TmLam . toScope <$> go (fromScope s)
+        TmRecord a -> TmRecord <$> traverse (traverse go) a
         TmVar a -> f $ TmVar a
-        TmEmpty -> f TmEmpty
         TmExtend l -> f $ TmExtend l
         TmSelect l -> f $ TmSelect l
         TmRestrict l -> f $ TmRestrict l
@@ -214,7 +214,7 @@ stripAnnots tm =
     TmApp a b -> TmApp (stripAnnots a) (stripAnnots b)
     TmAdd a b -> TmAdd (stripAnnots a) (stripAnnots b)
     TmLam s -> TmLam . toScope . stripAnnots $ fromScope s
-    TmEmpty -> TmEmpty
+    TmRecord a -> TmRecord $ fmap (fmap stripAnnots) a
     TmExtend l -> TmExtend l
     TmSelect l -> TmSelect l
     TmRestrict l -> TmRestrict l

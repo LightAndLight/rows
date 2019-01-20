@@ -21,6 +21,7 @@ import Data.Coerce (coerce)
 import Data.Equivalence.Monad (MonadEquiv, equate, runEquivT)
 import Data.List (elemIndex)
 import Data.Maybe (fromJust)
+import Data.Traversable (for)
 import Data.Void (Void, absurd)
 
 import qualified Data.Set as Set
@@ -212,6 +213,14 @@ inferTypeM ctx tyCtorCtx varCtx tm =
       (EvT b', bTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT b
       unifyType tyCtorCtx bTy (lift TyInt)
       pure (EvT $ TmAdd a' b', lift TyInt)
+    TmRecord rs -> do
+      res <- for rs $ \(l, v) -> do
+        (v', vTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT v
+        pure (l, v', vTy)
+      pure
+        ( EvT . TmRecord $ (\(l, EvT v, _) -> (l, v)) <$> res
+        , MetaT . tyRecord $ foldr (\(l, _, MetaT vTy) -> tyRowExtend l vTy) TyRowEmpty res
+        )
     TmLam s -> do
       argTy <- newMeta KindType
       (EvT body', bodyTy) <-
@@ -224,7 +233,6 @@ inferTypeM ctx tyCtorCtx varCtx tm =
         ( EvT $ TmLam $ toScope $ sequence <$> body'
         , MetaT $ TyApp (TyApp TyArr (TyVar argTy)) (unMetaT bodyTy)
         )
-    TmEmpty -> pure (EvT TmEmpty, lift $ tyRecord TyRowEmpty)
     TmSelect l -> do
       metaTy <- TyVar <$> newMeta KindType
       metaRow <- TyVar <$> newMeta KindRow

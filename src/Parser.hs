@@ -99,7 +99,7 @@ parseTm = expr
 
       <|>
 
-      SynEmpty <$ string "}"
+      SynRecord [] <$ string "}"
 
     record =
       symbol space "*{" *>
@@ -110,7 +110,7 @@ parseTm = expr
 
        <|>
 
-       SynEmpty <$ string "}")
+       SynRecord [] <$ string "}")
 
     parens =
       between (symbol space "(") (string ")") $

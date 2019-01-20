@@ -385,7 +385,7 @@ typesSpec supply =
               (tmSelect (pure "r") (Label "x")))
             (tmExtend (Label "f") (lam "x" $ pure "x") $
             tmExtend (Label "x") (TmInt 99) $
-            TmEmpty))
+            (TmRecord [])))
 
         `shouldBe`
 
@@ -397,6 +397,6 @@ typesSpec supply =
                   (TmApp (TmApp (TmSelect $ Label "x") (TmAdd (TmInt 1) (TmInt 0))) (pure "r")))
               (TmApp (TmApp (TmApp (TmExtend $ Label "f") (TmInt 0)) (lam "x" $ pure "x")) $
                 TmApp (TmApp (TmApp (TmExtend $ Label "x") (TmInt 0)) (TmInt 99)) $
-                TmEmpty)
+                (TmRecord []))
           , forAll [] TyInt
           )

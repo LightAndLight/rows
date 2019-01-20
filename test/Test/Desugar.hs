@@ -39,7 +39,8 @@ desugarSpec =
   describe "Desugar" $ do
     describe "Sections" $ do
       it "merge test 1" $ do
-        merge @Text @Text
+        mergeWith @Text @Text
+          SynApp
           ( 1
           , Syn.lam "a" $ SynApp (pure "x") (pure "a")
           )

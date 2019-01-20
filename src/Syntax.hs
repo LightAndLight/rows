@@ -30,11 +30,6 @@ data Syn tyVar a
   -- @\x -> x@
   | SynLam (Scope () (Syn tyVar) a)
 
-  -- | Empty record
-  --
-  -- @*{}@
-  | SynEmpty
-
   -- | Record extension
   --
   -- @*{ l = _ | _ }@
@@ -74,6 +69,11 @@ data Syn tyVar a
   --
   -- @(...)@
   | SynParens (Syn tyVar a)
+
+  -- | Record literal
+  --
+  -- @{ x1 = _, x2 = _, ..., xn = _ }@
+  | SynRecord [(Label, Syn tyVar a)]
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Syn
 deriveShow1 ''Syn
@@ -86,7 +86,6 @@ instance Bifunctor Syn where
       SynVar a -> SynVar $ g a
       SynApp a b -> SynApp (bimap f g a) (bimap f g b)
       SynLam s -> SynLam . hoistScope (first f) $ fmap g s
-      SynEmpty -> SynEmpty
       SynExtend l -> SynExtend l
       SynSelect l -> SynSelect l
       SynRestrict l -> SynRestrict l
@@ -95,6 +94,7 @@ instance Bifunctor Syn where
       SynEmbed l -> SynEmbed l
       SynUnknown -> SynUnknown
       SynParens a -> SynParens (bimap f g a)
+      SynRecord a -> SynRecord $ fmap (fmap (bimap f g)) a
 
 instance Plated1 (Syn tyVar) where
   plate1 f = go
@@ -105,7 +105,6 @@ instance Plated1 (Syn tyVar) where
           SynVar a -> pure $ SynVar a
           SynApp a b -> SynApp <$> f a <*> f b
           SynLam s -> SynLam . toScope <$> f (fromScope s)
-          SynEmpty -> pure SynEmpty
           SynExtend l -> pure $ SynExtend l
           SynSelect l -> pure $ SynSelect l
           SynRestrict l -> pure $ SynRestrict l
@@ -114,6 +113,7 @@ instance Plated1 (Syn tyVar) where
           SynEmbed l -> pure $ SynEmbed l
           SynUnknown -> pure $ SynUnknown
           SynParens a -> SynParens <$> f a
+          SynRecord a -> SynRecord <$> traverse (traverse f) a
 
 lam :: Eq a => a -> Syn tyVar a -> Syn tyVar a
 lam a = SynLam . abstract1 a

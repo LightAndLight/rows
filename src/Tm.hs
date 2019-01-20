@@ -1,5 +1,6 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 {-# language FlexibleContexts #-}
+{-# language RankNTypes #-}
 {-# language ScopedTypeVariables #-}
 {-# language StandaloneDeriving #-}
 {-# language TemplateHaskell #-}
@@ -9,6 +10,7 @@ import Bound.Scope (Scope, abstract1, hoistScope, toScope, fromScope)
 import Bound.TH (makeBound)
 import Data.Bifunctor (Bifunctor(..))
 import Data.Deriving (deriveEq1, deriveShow1)
+import Data.Functor.Const (Const(..))
 import Data.Generics.Plated1 (Plated1(..))
 
 import Label
@@ -140,6 +142,35 @@ instance Plated1 (Tm tyVar) where
           TmInject l -> pure $ TmInject l
           TmEmbed l -> pure $ TmEmbed l
           TmInt n -> pure $ TmInt n
+
+traverseTmLeaves
+  :: forall f tyVar. Applicative f
+  => (forall x. Tm tyVar x -> f (Tm tyVar x))
+  -> forall x. Tm tyVar x -> f (Tm tyVar x)
+traverseTmLeaves f = go
+  where
+    go :: forall y. Tm tyVar y -> f (Tm tyVar y)
+    go tm =
+      case tm of
+        TmAnn a b -> (\a' -> TmAnn a' b) <$> go a
+        TmApp a b -> TmApp <$> go a <*> go b
+        TmAdd a b -> TmAdd <$> go a <*> go b
+        TmLam s -> TmLam . toScope <$> go (fromScope s)
+        TmVar a -> f $ TmVar a
+        TmEmpty -> f TmEmpty
+        TmExtend l -> f $ TmExtend l
+        TmSelect l -> f $ TmSelect l
+        TmRestrict l -> f $ TmRestrict l
+        TmMatch l -> f $ TmMatch l
+        TmInject l -> f $ TmInject l
+        TmEmbed l -> f $ TmEmbed l
+        TmInt n -> f $ TmInt n
+
+foldMapTmLeaves
+  :: forall m tyVar. Monoid m
+  => (forall x. Tm tyVar x -> m)
+  -> forall x. Tm tyVar x -> m
+foldMapTmLeaves f = getConst . traverseTmLeaves (Const . f)
 
 lam :: Eq a => a -> Tm tyVar a -> Tm tyVar a
 lam a = TmLam . abstract1 a

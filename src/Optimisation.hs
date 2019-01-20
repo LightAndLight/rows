@@ -116,8 +116,8 @@ variantElim tm =
           _ -> Just $ TmApp rest (tmInject l' a)
     _ -> Nothing
 
-foldInts :: Tm ty a -> Maybe (Tm ty a)
-foldInts tm =
+foldAddition :: Tm ty a -> Maybe (Tm ty a)
+foldAddition tm =
   case tm of
     -- reduction
     TmAdd (TmInt a) (TmInt b) -> Just $ TmInt (a + b)
@@ -126,8 +126,16 @@ foldInts tm =
     TmAdd (TmInt 0) a -> Just a
     TmAdd a (TmInt 0) -> Just a
 
-    -- associativity
-    TmAdd (TmInt a) (TmAdd (TmInt b) c) -> Just $ TmAdd (TmInt (a + b)) c
+    -- a + (b + c) -> (a + b) + c
+    TmAdd a (TmAdd b c) -> Just $ TmAdd (TmAdd a b) c
+
+    -- (a + 1) + 1 -> a + 2
     TmAdd (TmAdd a (TmInt b)) (TmInt c) -> Just $ TmAdd a (TmInt (b + c))
+
+    -- (a + b) + 1 -> (a + 1) + b
+    TmAdd (TmAdd a b) (TmInt c) -> Just $ TmAdd (TmAdd a (TmInt c)) b
+
+    -- (a + 1) + b -> (1 + a) + b
+    TmAdd (TmAdd a (TmInt b)) c -> Just $ TmAdd (TmAdd (TmInt b) a) c
 
     _ -> Nothing

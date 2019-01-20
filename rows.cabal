@@ -18,6 +18,7 @@ extra-source-files:  CHANGELOG.md
 library
   exposed-modules:     Desugar
                      , Desugar.Sections
+                     , Eval
                      , Evidence
                      , Tm
                      , Ty
@@ -59,7 +60,9 @@ test-suite rows-tests
                      , concurrent-supply
                      , equivalence
                      , rows
+                     , hedgehog
                      , hspec
+                     , hw-hspec-hedgehog
                      , megaparsec
                      , mtl
                      , plated1

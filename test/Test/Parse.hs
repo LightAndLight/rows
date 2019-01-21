@@ -64,10 +64,11 @@ parseSpec =
         (TmRecord []))
       testParseTmSuccess
         "*{x = a, y = b, z = c}"
-        (tmExtend (Label "x") (pure "a") $
-        tmExtend (Label "y") (pure "b") $
-        tmExtend (Label "z") (pure "c") $
-        (TmRecord []))
+        (TmRecord
+         [ (Label "x", pure "a")
+         , (Label "y", pure "b")
+         , (Label "z", pure "c")
+         ])
       testParseTmSuccess
         "+{ a is x ? \\b -> b | \\c -> c }"
         (tmMatch (pure "a") (Label "x") (lam "b" $ pure "b") (lam "c" $ pure "c"))
@@ -104,7 +105,7 @@ parseSpec =
         (TmAnn (lam "x" $ pure "y") (TyCtor "T"))
       testParseTmSuccess
         "*{ x = a }.x"
-        (tmSelect (tmExtend (Label "x") (pure "a") (TmRecord [])) (Label "x"))
+        (tmSelect (TmRecord [(Label "x", pure "a")]) (Label "x"))
     describe "Type" $ do
       testParseTySuccess "(->)" TyArr
       testParseTySuccess "(->) a b" (tyArr (pure "a") (pure "b"))

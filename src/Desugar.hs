@@ -1,6 +1,8 @@
 module Desugar where
 
 import Bound.Scope (fromScope, toScope)
+import Data.Function (on)
+import Data.List (sortBy)
 
 import Tm
 import Syntax
@@ -18,6 +20,9 @@ desugar syn =
     SynMatch l -> TmMatch l
     SynInject l -> TmInject l
     SynEmbed l -> TmEmbed l
-    SynRecord rs -> TmRecord (fmap (fmap desugar) rs)
+    SynRecord rs ->
+      TmRecord .
+      sortBy (compare `on` fst) $
+      fmap (fmap desugar) rs
     SynParens a -> desugar a
     SynUnknown -> undefined

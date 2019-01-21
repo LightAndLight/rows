@@ -88,7 +88,7 @@ betaReduce tm =
 recordElim :: Tm ty a -> Maybe (Tm ty a)
 recordElim tm =
   case tm of
-    TmApp (TmSelect l) r -> selectFrom l r
+    TmApp (TmSelect l) (TmRecord rs) -> lookup l rs
     _ -> Nothing
 
 -- |

@@ -5,6 +5,7 @@
 module Parser where
 
 import Control.Applicative ((<**>), (<|>), many, optional)
+import Data.Bifunctor (bimap)
 import Data.List.NonEmpty (NonEmpty(..))
 import Data.Text (Text)
 
@@ -88,22 +89,22 @@ parseTm = expr
         else pure $ SynVar i
 
     extendSeq =
-      symbol space "|" *> expr <* string "}"
+      Left <$ symbol space "|" <*> expr <* string "}"
 
       <|>
 
-      synExtend <$ symbol space "," <*>
+      (\l e -> bimap (synExtend l e) ((l, e) :)) <$ symbol space "," <*>
       lexeme space label <* symbol space "=" <*>
       expr <*>
       extendSeq
 
       <|>
 
-      SynRecord [] <$ string "}"
+      Right [] <$ string "}"
 
     record =
       symbol space "*{" *>
-      (synExtend <$>
+      ((\l e -> either (synExtend l e) (SynRecord . (:) (l, e))) <$>
        lexeme space label <* symbol space "=" <*>
        expr <*>
        extendSeq

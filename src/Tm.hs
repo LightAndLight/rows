@@ -194,15 +194,6 @@ tmInject l = TmApp $ TmInject l
 tmEmbed :: Label -> Tm tyVar a -> Tm tyVar a
 tmEmbed l = TmApp $ TmEmbed l
 
-selectFrom :: Label -> Tm tyVar a -> Maybe (Tm tyVar a)
-selectFrom l = go
-  where
-    go (TmApp (TmApp (TmExtend l') val) rest) =
-      if l == l'
-      then Just val
-      else go rest
-    go _ = Nothing
-
 deriving instance (Eq tyVar, Eq a) => Eq (Tm tyVar a)
 deriving instance (Show tyVar, Show a) => Show (Tm tyVar a)
 

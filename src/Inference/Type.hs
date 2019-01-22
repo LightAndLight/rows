@@ -10,19 +10,17 @@
 {-# language RankNTypes #-}
 module Inference.Type where
 
-import Bound.Scope (abstractEither, instantiateVars, fromScope, toScope)
+import Bound.Scope (instantiateVars, fromScope, toScope)
 import Bound.Var (Var(..), unvar)
 import Control.Concurrent.Supply (Supply)
 import Control.Lens.Getter (use)
-import Control.Monad (replicateM)
+import Control.Monad (replicateM, unless)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Writer.Strict (runWriterT)
 import Data.Bifunctor (first)
 import Data.Coerce (coerce)
 import Data.Foldable (toList)
-import Data.List (elemIndex)
-import Data.Maybe (fromJust)
 import Data.Traversable (for)
 import Data.Void (Void, absurd)
 
@@ -126,6 +124,23 @@ unifyType tyCtorCtx x y = do
     go TyRecord TyRecord = pure ()
     go TyVariant TyVariant = pure ()
     go TyInt TyInt = pure ()
+    go (TyForall 0 s) ty =
+      unifyType
+        tyCtorCtx
+        (MetaT $ instantiateVars [] s)
+        (MetaT ty)
+    go ty (TyForall 0 s) =
+      unifyType
+        tyCtorCtx
+        (MetaT ty)
+        (MetaT $ instantiateVars [] s)
+    go (TyForall n s) (TyForall n' s') | n == n' =
+      deep $ do
+        skolems <- replicateM n $ newSkolem =<< KindVar <$> lift newKindMeta
+        unifyType
+          tyCtorCtx
+          (MetaT $ instantiateVars skolems s)
+          (MetaT $ instantiateVars skolems s')
     go (TyRowExtend l) (TyRowExtend l') | l == l' = pure ()
     go ty@(TyApp (TyApp (TyRowExtend l) t) r) s = do
       rewritten <- rewriteRow tyCtorCtx (rowTail r) l s
@@ -158,34 +173,30 @@ unifyType tyCtorCtx x y = do
           metas -> throwError $ TypeEscaped metas
     go l m = throwError $ TypeMismatch (MetaT l) (MetaT m)
 
-generalize :: MetaT Int Ty tyVar -> Ty tyVar
-generalize (MetaT t) =
-  TyForall (Set.size uniq) $
-  abstractEither
-    (foldMeta
-       (\_ -> Left . fromJust . (`elemIndex` ordered uniq metas))
-       undefined
-       Right)
-    t
-  where
-    ordered set xs =
-      case xs of
-        [] -> []
-        a:as ->
-          if a `Set.member` set
-          then a : ordered (Set.delete a set) as
-          else ordered set as
+contextFor
+  :: (x -> Either tmVar (MetaT Int Ty tyVar))
+  -> EvT ev (Tm (Meta Int tyVar)) x
+  -> [MetaT Int Ty tyVar]
+contextFor ctx = foldr (\a b -> either (const b) (: b) $ ctx a) []
 
-    (uniq, metas) =
+generalize
+  :: Ord tyVar
+  => [MetaT Int Ty tyVar] -- ^ Variable context
+  -> MetaT Int Ty tyVar -- ^ Term to generalize
+  -> Ty (Meta Int tyVar)
+generalize ctx (MetaT t) = forall_ minusContextMetas t
+  where
+    frees = toList t
+    ctxMetas =
       foldr
-        (\a (b1, b2) ->
-           foldMeta
-             (\_ -> (,) <$> (`Set.insert` b1) <*> (: b2))
-             undefined
-             (const (b1, b2))
-             a)
-        (Set.empty, [])
-        t
+        (\a b ->
+           case unMetaT a of
+             TyVar (M _ v) -> Set.insert v b
+             _ -> b)
+        Set.empty
+        ctx
+    minusContextMetas =
+      filter (\case; M _ v -> Set.notMember v ctxMetas; _ -> True) frees
 
 generalizeType
   :: forall s tyVar tmVar x m
@@ -194,14 +205,19 @@ generalizeType
      , Show tyVar, Show tmVar
      , Show x
      )
-  => (EvT Int (Tm (Meta Int tyVar)) x, MetaT Int Ty tyVar)
+  => (x -> Either tmVar (MetaT Int Ty tyVar))
+  -> (EvT Int (Tm (Meta Int tyVar)) x, MetaT Int Ty tyVar)
   -> TypeM s tyVar Int m (Tm Void x, Ty tyVar)
-generalizeType (EvT tm, MetaT ty) = do
+generalizeType varCtx (EvT tm, MetaT ty) = do
   (tm', constraints) <- finalizeEvidence tm
   ty' <-
-    generalize <$>
+    generalize (contextFor varCtx $ EvT tm) <$>
     findType (MetaT $ foldr (tyConstraint . unMetaT) ty constraints)
-  pure (stripAnnots tm', ty')
+  case traverse (\case; N a -> Just a; _ -> Nothing) ty' of
+    Nothing ->
+      error $
+      "generalizeType: unsolved metas:\n\n" <> show ty
+    Just ty'' -> pure (stripAnnots tm', ty'')
 
 applyEvidence
   :: ( MonadError (TypeError Int tyVar tmVar) m
@@ -262,15 +278,27 @@ inferTypeM ctx tyCtorCtx varCtx tm =
         )
     TmLam s -> do
       argTy <- newMeta KindType
-      (EvT body', bodyTy) <-
+      (EvT body', MetaT bodyTy) <-
         inferTypeM
           (F . ctx)
           tyCtorCtx
           (unvar (const $ Right $ MetaT $ TyVar argTy) varCtx)
           (EvT $ sequence <$> fromScope s)
+      bodyTy' <-
+        case bodyTy of
+          TyForall n sc -> do
+            metas <- replicateM n $ newMeta =<< KindVar <$> lift newKindMeta
+            pure $ instantiateVars metas sc
+          _ -> pure bodyTy
+
+      argTy' <- findType $ MetaT (TyVar argTy)
+      unless (isMonotype $ unMetaT argTy') .
+        throwError $ TypePolymorphicArg argTy'
+
+      let tm' = EvT $ TmLam $ toScope $ sequence <$> body'
       pure
-        ( EvT $ TmLam $ toScope $ sequence <$> body'
-        , MetaT $ TyApp (TyApp TyArr (TyVar argTy)) (unMetaT bodyTy)
+        ( tm'
+        , MetaT $ generalize (contextFor varCtx tm') (MetaT $ tyArr (TyVar argTy) bodyTy')
         )
     TmSelect l -> do
       metaTy <- TyVar <$> newMeta KindType
@@ -359,7 +387,7 @@ inferType supply tyCtorCtx tyVarCtx varCtx tm =
               (fmap (fmap absurd) . tyVarCtx)
         , _inferDepth = 0
         })
-     (generalizeType =<<
+     (generalizeType (fmap lift . varCtx) =<<
       inferTypeM
         id
         tyCtorCtx

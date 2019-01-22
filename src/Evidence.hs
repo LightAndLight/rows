@@ -47,6 +47,9 @@ instance (Ord b, Ord a, Ord1 m) => Ord (EvT b m a) where
 instance Functor m => Functor (EvT b m) where
   fmap f (EvT m) = EvT $ fmap (fmap f) m
 
+instance Foldable m => Foldable (EvT b m) where
+  foldMap f (EvT m) = foldMap (foldEv (const mempty) f) m
+
 instance Applicative m => Applicative (EvT b m) where
   pure = EvT . pure . pure
   EvT a <*> EvT b = EvT $ (<*>) <$> a <*> b

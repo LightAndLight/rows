@@ -17,6 +17,7 @@ data TypeError a b c
   | TypeCannotDeduce (MetaT a Ty b)
   | TypeKindError (KindError (Meta Int b))
   | TypeEscaped [Meta a b]
+  | TypePolymorphicArg (MetaT a Ty b)
   deriving (Eq, Show)
 makeClassyPrisms ''TypeError
 

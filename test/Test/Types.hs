@@ -1,3 +1,4 @@
+{-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
 module Test.Types where
 
@@ -109,6 +110,31 @@ typesSpec supply =
            (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "b"))
            (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "b")))
         (forall_ [N "a"] (tyArr (pure $ N "a") (pure $ N "a")))
+      it "4) |- forall a. a -> b `notInstanceOf` forall a. a -> a" $ do
+        let
+          iState =
+            InferState
+            { _inferSupply = supply
+            , _inferEvidence = mempty
+            , _inferKinds =
+              \case
+                M 0 99 -> Just KindType
+                _ -> Nothing
+            , _inferDepth = 0
+            }
+          ctx = const Nothing
+
+        runInstanceOf
+          supply
+          iState
+          ctx
+          (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ M 0 99))
+          (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "a"))
+
+          `shouldBe`
+
+          Left (TypeEscaped [S 1 0])
+
     it "1) |- (\\x -> x) : forall a. a -> a" $ do
       let
         tyCtorCtx = const Nothing

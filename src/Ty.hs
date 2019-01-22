@@ -6,6 +6,7 @@ module Ty where
 
 import Bound.Scope (Scope, abstract)
 import Bound.TH (makeBound)
+import Control.Lens.Fold (allOf)
 import Control.Lens.Plated (Plated(..), gplate)
 import Data.Deriving (deriveEq1, deriveOrd1, deriveShow1)
 import Data.List (elemIndex)
@@ -90,6 +91,11 @@ deriving instance Eq a => Eq (Ty a)
 deriving instance Show a => Show (Ty a)
 
 instance Plated (Ty a) where; plate = gplate
+
+isMonotype :: Ty a -> Bool
+isMonotype ty =
+  (case ty of; TyForall{} -> False; _ -> True) &&
+  allOf plate isMonotype ty
 
 tyArr :: Ty a -> Ty a -> Ty a
 tyArr a = TyApp $ TyApp TyArr a

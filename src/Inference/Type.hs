@@ -232,6 +232,22 @@ applyEvidence (p:ps) (EvT !a) = do
   EvT e <- maybe (EvT . TmVar <$> newEv p) pure res
   applyEvidence ps $ EvT (TmApp a e)
 
+funmatch ::
+  ( MonadError (TypeError Int tyVar ev) m
+  , Show tyVar, Ord tyVar
+  ) =>
+  (String -> Maybe (Kind Void)) -> -- ^ Type constructors
+  MetaT Int Ty tyVar ->
+  TypeM s tyVar Int (KindM s' m) (MetaT Int Ty tyVar, MetaT Int Ty tyVar)
+funmatch tyCtorCtx (MetaT ty) =
+  case ty of
+    TyApp (TyApp TyArr i) o -> pure (MetaT i, MetaT o)
+    _ -> do
+      inTy <- TyVar <$> newMeta KindType
+      outTy <- TyVar <$> newMeta KindType
+      unifyType tyCtorCtx (MetaT ty) (MetaT $ tyArr inTy outTy)
+      pure (MetaT inTy, MetaT outTy)
+
 inferTypeM
   :: ( MonadError (TypeError Int tyVar tmVar) m
      , Ord tyVar, Show tyVar, Show x
@@ -244,8 +260,8 @@ inferTypeM
 inferTypeM ctx tyCtorCtx varCtx tm =
   case unEvT tm of
     TmAnn a ty -> do
-      (EvT tm', aTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT a
-      unifyType tyCtorCtx aTy (MetaT ty)
+      (EvT tm', MetaT aTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT a
+      instanceOf tyCtorCtx ty aTy
       pure (EvT $ TmAnn tm' ty, MetaT ty)
     TmVar E{} -> error "trying to infer type for evidence variable"
     TmVar (V a) -> do
@@ -255,13 +271,21 @@ inferTypeM ctx tyCtorCtx varCtx tm =
       pure (tm', ty')
     TmApp a b -> do
       (EvT a', aTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT a
+
+      aTy' <-
+        case unMetaT aTy of
+          TyForall n s -> do
+            metas <- replicateM n $ newMeta =<< KindVar <$> lift newKindMeta
+            pure $ instantiateVars metas s
+          aTy' -> pure aTy'
+      (MetaT inTy, outTy) <- funmatch tyCtorCtx $ MetaT aTy'
+
       (EvT b', MetaT bTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT b
-      retTy <- newMeta KindType
-      unifyType
-        tyCtorCtx
-        aTy
-        (MetaT $ TyApp (TyApp TyArr bTy) (TyVar retTy))
-      pure (EvT $ TmApp a' b', MetaT $ TyVar retTy)
+
+      instanceOf tyCtorCtx bTy inTy
+
+      let tm' = EvT $ TmApp a' b'
+      pure (tm', MetaT $ generalize (contextFor varCtx tm') outTy)
     TmAdd a b -> do
       (EvT a', aTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT a
       unifyType tyCtorCtx aTy (lift TyInt)

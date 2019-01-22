@@ -11,7 +11,6 @@ import Control.Applicative ((<|>))
 import Control.Concurrent.Supply (Supply, freshId)
 import Control.Lens.Plated (plate)
 import Control.Lens.Review ((#))
-import Control.Lens.TH (makeClassyPrisms)
 import Control.Lens.Traversal (traverseOf)
 import Control.Monad ((<=<))
 import Control.Monad.Except (MonadError, throwError)
@@ -21,16 +20,9 @@ import Data.Foldable (for_)
 import Data.Traversable (for)
 import Data.Void (Void, absurd)
 
+import Inference.Kind.Error
 import Kind
 import Ty
-
-data KindError a
-  = KindOccurs Int (Kind Int)
-  | KindMismatch (Kind Int) (Kind Int)
-  | KindVarNotFound a
-  | KindCtorNotFound String
-  deriving (Eq, Show)
-makeClassyPrisms ''KindError
 
 occursKind :: Eq meta => meta -> Kind meta -> Bool
 occursKind v = foldr (\a b -> a == v || b) False
@@ -81,6 +73,7 @@ unifyKind x y = do
       else equate (KindVar x') k
     go KindType KindType = pure ()
     go KindRow KindRow = pure ()
+    go KindConstraint KindConstraint = pure ()
     go (KindArr x' y') (KindArr x'' y'') =
       unifyKind x' x'' *>
       unifyKind y' y''
@@ -97,6 +90,8 @@ inferKindM
   -> Ty a
   -> m (Kind Int)
 inferKindM _ _ TyArr = pure $ KindArr KindType (KindArr KindType KindType)
+inferKindM _ _ TyConstraint =
+  pure $ KindArr KindConstraint (KindArr KindType KindType)
 inferKindM ctorCtx _ (TyCtor s) =
   maybe (throwError $ _KindCtorNotFound # s) pure $ ctorCtx s
 inferKindM _ varCtx (TyVar x) =
@@ -115,6 +110,10 @@ inferKindM _ _ TyVariant =
   pure $ KindArr KindRow KindType
 inferKindM _ _ TyRowExtend{} =
   pure $ KindArr KindType (KindArr KindRow KindRow)
+inferKindM _ _ TyOffset{} =
+  pure $ KindArr KindRow KindConstraint
+inferKindM _ _ TyInt{} =
+  pure KindType
 
 inferDataDeclKind
   :: forall e a m

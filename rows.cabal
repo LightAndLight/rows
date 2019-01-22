@@ -18,12 +18,19 @@ extra-source-files:  CHANGELOG.md
 library
   exposed-modules:     Desugar
                      , Desugar.Sections
+                     , Eval
+                     , Evidence
                      , Tm
                      , Ty
                      , Kind
                      , Meta
+                     , Inference.Evidence
                      , Inference.Kind
+                     , Inference.Kind.Error
+                     , Inference.State
                      , Inference.Type
+                     , Inference.Type.Row
+                     , Inference.Type.Error
                      , Label
                      , Optimisation
                      , Parser
@@ -46,13 +53,21 @@ library
 
 test-suite rows-tests
   type:                exitcode-stdio-1.0
+  other-modules:       Test.Desugar
+                     , Test.Kinds
+                     , Test.Optimise
+                     , Test.Parse
+                     , Test.ParseTypes
+                     , Test.Types
   hs-source-dirs:      test
   build-depends:       base <5
                      , bound
                      , concurrent-supply
                      , equivalence
                      , rows
+                     , hedgehog
                      , hspec
+                     , hw-hspec-hedgehog
                      , megaparsec
                      , mtl
                      , plated1

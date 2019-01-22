@@ -53,16 +53,18 @@ inline binds = go id Right
                 else pure $ ctx <$> binds x
         TmAnn a b -> (\a' -> TmAnn a' b) <$> go ctx toVar a
         TmApp a b -> TmApp <$> go ctx toVar a <*> go ctx toVar b
+        TmAdd a b -> TmAdd <$> go ctx toVar a <*> go ctx toVar b
+        TmRecord a -> TmRecord <$> traverse (traverse (go ctx toVar)) a
         TmLam s ->
           TmLam . toScope <$>
           go (F . ctx) (unvar (Left . B) (first F . toVar)) (fromScope s)
-        TmEmpty -> pure TmEmpty
         TmExtend l -> pure $ TmExtend l
         TmSelect l -> pure $ TmSelect l
         TmRestrict l -> pure $ TmRestrict l
         TmMatch l -> pure $ TmMatch l
         TmInject l -> pure $ TmInject l
         TmEmbed l -> pure $ TmEmbed l
+        TmInt l -> pure $ TmInt l
 
 -- |
 -- @\\x -> f x ~~> f   when   notFreeIn(x, f)@
@@ -77,16 +79,18 @@ etaReduce _ = Nothing
 -- @(\\x. y) a ~~> y[a]@
 betaReduce :: Tm ty a -> Maybe (Tm ty a)
 betaReduce tm =
+  -- beta reduction is a valid optimisation so long as we don't reduce
+  -- variables
   case tm of
     TmApp (TmLam s) x -> Just $ instantiate1 x s
     _ -> Nothing
 
 -- |
--- @*{x_1 = v_1, x_2 = v_2, ..., x_i = v_i, ... | ... }.x_i ~~> v_i@
+-- @*{x_1 = v_1, x_2 = v_2, ..., x_i = v_i, ..., x_n = v_n }.x_i ~~> v_i@
 recordElim :: Tm ty a -> Maybe (Tm ty a)
 recordElim tm =
   case tm of
-    TmApp (TmSelect l) r -> selectFrom l r
+    TmApp (TmSelect l) (TmRecord rs) -> lookup l rs
     _ -> Nothing
 
 -- |
@@ -112,4 +116,28 @@ variantElim tm =
         case rest of
           TmLam fRest -> variantElim $ instantiate1 (tmInject l' a) fRest
           _ -> Just $ TmApp rest (tmInject l' a)
+    _ -> Nothing
+
+foldAddition :: Tm ty a -> Maybe (Tm ty a)
+foldAddition tm =
+  case tm of
+    -- reduction
+    TmAdd (TmInt a) (TmInt b) -> Just $ TmInt (a + b)
+
+    -- identity
+    TmAdd (TmInt 0) a -> Just a
+    TmAdd a (TmInt 0) -> Just a
+
+    -- a + (b + c) -> (a + b) + c
+    TmAdd a (TmAdd b c) -> Just $ TmAdd (TmAdd a b) c
+
+    -- (a + 1) + 1 -> a + 2
+    TmAdd (TmAdd a (TmInt b)) (TmInt c) -> Just $ TmAdd a (TmInt (b + c))
+
+    -- (a + b) + 1 -> (a + 1) + b
+    TmAdd (TmAdd a b) (TmInt c) -> Just $ TmAdd (TmAdd a (TmInt c)) b
+
+    -- (a + 1) + b -> (1 + a) + b
+    TmAdd (TmAdd a (TmInt b)) c -> Just $ TmAdd (TmAdd (TmInt b) a) c
+
     _ -> Nothing

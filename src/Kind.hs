@@ -9,6 +9,7 @@ import GHC.Generics (Generic)
 data Kind a
   = KindType
   | KindRow
+  | KindConstraint
   | KindArr (Kind a) (Kind a)
   | KindVar a
   deriving (Eq, Ord, Show, Functor, Foldable, Traversable, Generic)

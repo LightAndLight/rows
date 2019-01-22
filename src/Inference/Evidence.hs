@@ -6,11 +6,9 @@ module Inference.Evidence where
 import Bound.Scope (abstract)
 import Control.Lens.Getter (use)
 import Control.Monad.Except (MonadError)
-import Control.Monad.State (MonadState)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Writer.Strict (WriterT, runWriterT, tell)
 import Data.Either (partitionEithers)
-import Data.Equivalence.Monad (MonadEquiv)
 import Data.Foldable (toList)
 import Data.Sequence (Seq)
 import Data.Traversable (for)
@@ -20,20 +18,19 @@ import qualified Data.Sequence as Seq
 import Evidence
 import Inference.State
 import Inference.Type.Error
+import Inference.Type.Monad
 import Meta
 import Tm
 import Ty
 
 evidenceFor
-  :: ( MonadState (InferState Int tyVar Int) m
-     , MonadError (TypeError Int tyVar tmVar) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Show tyVar
+  :: ( MonadError (TypeError Int tyVar tmVar) m
+     , Ord tyVar, Show tyVar
      )
   => MetaT Int Ty tyVar
   -> WriterT
        (Seq (EvEntry Int tyVar Int))
-       m
+       (TypeM s tyVar Int m)
        (Maybe (EvT Int (Tm (Meta Int tyVar)) x))
 evidenceFor ty = do
   ty' <- lift $ findType ty
@@ -57,13 +54,11 @@ evidenceFor ty = do
     _ -> pure Nothing
 
 getEvidence
-  :: forall tyVar tmVar c m x
-   . ( MonadState (InferState Int tyVar Int) m
-     , MonadError (TypeError Int tyVar tmVar) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Show tyVar
+  :: forall s tyVar tmVar m x
+   . ( MonadError (TypeError Int tyVar tmVar) m
+     , Ord tyVar, Show tyVar
      )
-  => m
+  => TypeM s tyVar Int m
        ( [(Int, EvT Int (Tm (Meta Int tyVar)) x)]
        , [(Int, MetaT Int Ty tyVar)]
        )
@@ -71,7 +66,7 @@ getEvidence = use inferEvidence >>= go
   where
     go
       :: Seq (EvEntry Int tyVar Int)
-      -> m
+      -> TypeM s tyVar Int m
            ( [(Int, EvT Int (Tm (Meta Int tyVar)) x)]
            , [(Int, MetaT Int Ty tyVar)]
            )
@@ -84,16 +79,14 @@ getEvidence = use inferEvidence >>= go
       (partitionEithers (toList evs') <>) <$> go more
 
 finalizeEvidence
-  :: forall tyVar tmVar c x m
-   . ( MonadState (InferState Int tyVar Int) m
-     , MonadError (TypeError Int tyVar tmVar) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Eq tyVar
+  :: forall s tyVar tmVar x m
+   . ( MonadError (TypeError Int tyVar tmVar) m
+     , Ord tyVar
      , Show tyVar, Show tmVar
      , Show x
      )
   => Tm (Meta Int tyVar) (Ev Int x)
-  -> m (Tm (Meta Int tyVar) x, [MetaT Int Ty tyVar])
+  -> TypeM s tyVar Int m (Tm (Meta Int tyVar) x, [MetaT Int Ty tyVar])
 finalizeEvidence tm = do
   (sat, unsat) <- getEvidence
   let

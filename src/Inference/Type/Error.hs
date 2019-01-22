@@ -16,6 +16,7 @@ data TypeError a b c
   | TypeKindMismatch (MetaT a Ty b) (Kind Void) (MetaT a Ty b) (Kind Void)
   | TypeCannotDeduce (MetaT a Ty b)
   | TypeKindError (KindError (Meta Int b))
+  | TypeEscaped [Meta a b]
   deriving (Eq, Show)
 makeClassyPrisms ''TypeError
 

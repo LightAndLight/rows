@@ -4,7 +4,6 @@ module Test.Kinds where
 
 import Control.Concurrent.Supply (Supply)
 import Control.Monad.Except (runExcept)
-import Control.Monad.State (evalStateT)
 import Data.Void (Void)
 
 import Inference.Kind
@@ -22,7 +21,7 @@ runInferKind
   -> Ty a
   -> Either (KindError a) (Kind Void)
 runInferKind supply a b ty =
-  runExcept $ evalStateT (inferKind a b ty) supply
+  runExcept $ inferKind supply a b ty
 
 runInferDataDeclKind
   :: Eq a
@@ -33,7 +32,7 @@ runInferDataDeclKind
   -> [[Ty a]] -- ^ Fields for each data constructor
   -> Either (KindError a) (Kind Void)
 runInferDataDeclKind supply a b c d =
-  runExcept $ evalStateT (inferDataDeclKind a b c d) supply
+  runExcept $ inferDataDeclKind supply a b c d
 
 kindsSpec :: Supply -> Spec
 kindsSpec supply =

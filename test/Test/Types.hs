@@ -6,10 +6,14 @@ import Bound.Var (Var(..))
 import Control.Concurrent.Supply (Supply)
 import Control.Monad.Except (runExcept)
 import Control.Monad.Trans.Class (lift)
+import Data.Text (Text)
 import Data.Void (Void)
 
+import Inference.Kind
+import Inference.State
 import Inference.Type
 import Inference.Type.Error
+import Inference.Type.Monad
 import Kind
 import Label
 import Meta
@@ -25,13 +29,86 @@ runInferType
   -> (b -> Maybe (Kind Void)) -- ^ Type variables
   -> (c -> Either c (Ty b)) -- ^ Term variables
   -> Tm b c
-  -> Either (TypeError Int b c) (Tm Void c, Forall b)
+  -> Either (TypeError Int b c) (Tm Void c, Ty b)
 runInferType supply a b c tm =
   runExcept $ inferType supply a b c tm
+
+runInstanceOf ::
+  Supply ->
+  InferState Int Text ev ->
+  (String -> Maybe (Kind Void)) ->
+  Ty (Meta Int Text) ->
+  Ty (Meta Int Text) ->
+  Either (TypeError Int Text ()) ()
+runInstanceOf supply is ctx a b =
+  runExcept $
+  runKindM supply $
+  runTypeM is (instanceOf ctx a b)
+
+isInstanceOf ::
+  String ->
+  Supply ->
+  Ty (Meta Int Text) ->
+  Ty (Meta Int Text) ->
+  Spec
+isInstanceOf text supply t1 t2 =
+  it text $ do
+    let
+      iState =
+        InferState
+        { _inferSupply = supply
+        , _inferEvidence = mempty
+        , _inferKinds = const Nothing
+        , _inferDepth = 0
+        }
+      ctx = const Nothing
+
+    runInstanceOf supply iState ctx t1 t2 `shouldBe` Right ()
+
+notInstanceOf ::
+  String ->
+  Supply ->
+  Ty (Meta Int Text) ->
+  Ty (Meta Int Text) ->
+  TypeError Int Text () ->
+  Spec
+notInstanceOf text supply t1 t2 err =
+  it text $ do
+    let
+      iState =
+        InferState
+        { _inferSupply = supply
+        , _inferEvidence = mempty
+        , _inferKinds = const Nothing
+        , _inferDepth = 0
+        }
+      ctx = const Nothing
+
+    runInstanceOf supply iState ctx t1 t2 `shouldBe` Left err
 
 typesSpec :: Supply -> Spec
 typesSpec supply =
   describe "Types" $ do
+    describe "Subsumption" $ do
+      isInstanceOf
+        "1) |- Int -> Int `instanceOf` forall a. a -> a"
+        supply
+        (tyArr TyInt TyInt)
+        (forall_ [N "a"] (tyArr (pure $ N "a") (pure $ N "a")))
+      notInstanceOf
+        "2) |- forall a. a -> a `notInstanceOf` Int -> Int"
+        supply
+        (forall_ [N "a"] (tyArr (pure $ N "a") (pure $ N "a")))
+        (tyArr TyInt TyInt)
+        (TypeMismatch (MetaT $ TyVar $ S 1 0) (MetaT TyInt))
+      isInstanceOf
+        "3) |- forall b. (forall a. a -> b) -> (forall a. -> b) `instanceOf` forall a. a -> a"
+        supply
+        (forall_ [N "b"] $
+         tyArr
+           (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "b"))
+           (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "b")))
+        (forall_ [N "a"] (tyArr (pure $ N "a") (pure $ N "a")))
     it "1) |- (\\x -> x) : forall a. a -> a" $ do
       let
         tyCtorCtx = const Nothing
@@ -53,7 +130,7 @@ typesSpec supply =
 
         Right
         ( lam "x" $ pure "x"
-        , Forall 1 $ toScope $
+        , TyForall 1 $ toScope $
           tyArr (TyVar $ B 0) (TyVar $ B 0)
         )
 
@@ -78,7 +155,7 @@ typesSpec supply =
 
         Right
           ( lam "x" $ lam "y" $ pure "x"
-          , Forall 2 $ toScope $
+          , TyForall 2 $ toScope $
             tyArr (TyVar (B 0)) $
             tyArr (TyVar (B 1)) $
             TyVar (B 0)
@@ -103,7 +180,7 @@ typesSpec supply =
 
         `shouldBe`
 
-        Left (TypeOccurs 0 (MetaT $ TyApp (TyApp TyArr (TyVar (M 0))) (TyVar (M 1))))
+        Left (TypeOccurs 0 (MetaT $ TyApp (TyApp TyArr (TyVar (M 0 0))) (TyVar (M 0 1))))
 
     it "4) f : X -> Y, x : Z |/- f x : Y" $ do
       let
@@ -156,7 +233,7 @@ typesSpec supply =
 
         Right
           ( lam "offset" $ TmApp (TmSelect $ Label "l") (pure "offset")
-          , forAll ["r", "a"] $
+          , forall_ ["r", "a"] $
             tyConstraint (tyOffset (Label "l") (pure "r")) $
             tyArr
               (tyRecord $ tyRowExtend (Label "l") (pure "a") (pure "r"))
@@ -191,7 +268,7 @@ typesSpec supply =
             TmApp
               (TmApp (TmApp (TmSelect $ Label "f") (pure "offset1")) (pure "r"))
               (TmApp (TmApp (TmSelect $ Label "x") (TmAdd (TmInt 1) (pure "offset2"))) (pure "r"))
-          , forAll ["r", "a", "b"] $
+          , forall_ ["r", "a", "b"] $
             tyConstraint
               (tyOffset (Label "f") (pure "r")) $
             tyConstraint
@@ -237,7 +314,7 @@ typesSpec supply =
 
         Right
         ( TmApp (TmApp (TmSelect $ Label "y") (TmAdd (TmInt 1) (TmInt 0))) (pure "r")
-        , forAll [] $ TyCtor "B"
+        , forall_ [] $ TyCtor "B"
         )
 
     it "8) r : Row, x : Record (x : A | r) -> A, y : Record (y : A | r) |/- x y : A" $ do
@@ -360,7 +437,7 @@ typesSpec supply =
 
         Right
         ( TmApp (TmApp (TmSelect $ Label "x") (TmInt 0)) (pure "r")
-        , forAll [] $ TyCtor "A"
+        , forall_ [] $ TyCtor "A"
         )
 
     it "11) |- (\\r -> r.f r.x) *{ f = \\x -> x, 99 } : Int" $ do
@@ -398,7 +475,7 @@ typesSpec supply =
               (TmApp (TmApp (TmApp (TmExtend $ Label "f") (TmInt 0)) (lam "x" $ pure "x")) $
                 TmApp (TmApp (TmApp (TmExtend $ Label "x") (TmInt 0)) (TmInt 99)) $
                 (TmRecord []))
-          , forAll [] TyInt
+          , forall_ [] TyInt
           )
 
     it "12) +{ x = 99 } 0 : Variant (x : Int, y : Int)" $ do
@@ -428,7 +505,7 @@ typesSpec supply =
 
         Right
         ( TmApp (TmApp (TmInject $ Label "x") (TmInt 0)) (TmInt 99)
-        , forAll [] ty
+        , forall_ [] ty
         )
 
     it "13) +{ y = 99 } (1 + 0) : Variant (x : Int, y : Int)" $ do
@@ -458,5 +535,5 @@ typesSpec supply =
 
         Right
         ( TmApp (TmApp (TmInject $ Label "y") (TmAdd (TmInt 1) (TmInt 0))) (TmInt 99)
-        , forAll [] ty
+        , forall_ [] ty
         )

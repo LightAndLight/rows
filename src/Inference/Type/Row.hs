@@ -2,12 +2,11 @@
 module Inference.Type.Row where
 
 import Control.Monad.Except (MonadError)
-import Control.Monad.State (MonadState)
-import Data.Equivalence.Monad (MonadEquiv, equate)
 import Data.Void (Void)
 
 import Inference.State
 import Inference.Type.Error
+import Inference.Type.Monad
 import Kind
 import Label
 import Meta
@@ -21,15 +20,13 @@ rowTail a = error $ "rowTail: can't get tail of:\n\n" <> show a
 
 rewriteRow
   :: ( MonadError (TypeError Int tyVar tmVar) m
-     , MonadState (InferState Int tyVar ev) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Eq tyVar, Show tyVar
+     , Ord tyVar, Show tyVar
      )
   => (String -> Maybe (Kind Void))
   -> Ty (Meta Int tyVar) -- ^ row tail
   -> Label -- ^ desired label
   -> Ty (Meta Int tyVar) -- ^ term to rewrite
-  -> m (Maybe (Label, Ty (Meta Int tyVar), Ty (Meta Int tyVar)))
+  -> TypeM s tyVar ev m (Maybe (Label, Ty (Meta Int tyVar), Ty (Meta Int tyVar)))
 rewriteRow tyCtorCtx rt ll ty =
   case ty of
     TyApp (TyApp (TyRowExtend l) t) r ->
@@ -47,6 +44,6 @@ rewriteRow tyCtorCtx rt ll ty =
       else do
         metaTy <- TyVar <$> newMeta KindType
         metaRow <- TyVar <$> newMeta KindRow
-        equate (MetaT ty) (MetaT $ tyRowExtend ll metaTy metaRow)
+        equateType (MetaT ty) (MetaT $ tyRowExtend ll metaTy metaRow)
         pure $ Just (ll, metaTy, metaRow)
     _ -> pure Nothing

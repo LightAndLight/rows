@@ -31,6 +31,7 @@ library
                      , Inference.Type
                      , Inference.Type.Row
                      , Inference.Type.Error
+                     , Inference.Type.Monad
                      , Label
                      , Optimisation
                      , Parser

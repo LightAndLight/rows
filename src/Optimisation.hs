@@ -79,12 +79,14 @@ etaReduce _ = Nothing
 -- @(\\x. y) a ~~> y[a]@
 betaReduce :: Tm ty a -> Maybe (Tm ty a)
 betaReduce tm =
+  -- beta reduction is a valid optimisation so long as we don't reduce
+  -- variables
   case tm of
     TmApp (TmLam s) x -> Just $ instantiate1 x s
     _ -> Nothing
 
 -- |
--- @*{x_1 = v_1, x_2 = v_2, ..., x_i = v_i, ... | ... }.x_i ~~> v_i@
+-- @*{x_1 = v_1, x_2 = v_2, ..., x_i = v_i, ..., x_n = v_n }.x_i ~~> v_i@
 recordElim :: Tm ty a -> Maybe (Tm ty a)
 recordElim tm =
   case tm of

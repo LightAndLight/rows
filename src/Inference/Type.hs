@@ -55,6 +55,7 @@ combineType (MetaT x) (MetaT y) = MetaT $ go x y
     go TyRowEmpty TyRowEmpty = TyRowEmpty
     go TyRecord TyRecord = TyRecord
     go TyVariant TyVariant = TyVariant
+    go TyInt TyInt = TyInt
     go (TyRowExtend l) (TyRowExtend l') | l == l' = TyRowExtend l
     go (TyCtor s) (TyCtor s') | s == s' = TyCtor s
     go (TyVar (N a)) (TyVar (N b)) | a == b = TyVar (N b)
@@ -96,6 +97,7 @@ unifyType tyCtorCtx x y = do
     go TyRowEmpty TyRowEmpty = pure ()
     go TyRecord TyRecord = pure ()
     go TyVariant TyVariant = pure ()
+    go TyInt TyInt = pure ()
     go (TyRowExtend l) (TyRowExtend l') | l == l' = pure ()
     go ty@(TyApp (TyApp (TyRowExtend l) t) r) s = do
       rewritten <- rewriteRow tyCtorCtx (rowTail r) l s

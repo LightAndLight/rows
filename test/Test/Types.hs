@@ -400,3 +400,63 @@ typesSpec supply =
                 (TmRecord []))
           , forAll [] TyInt
           )
+
+    it "12) +{ x = 99 } 0 : Variant (x : Int, y : Int)" $ do
+      let
+        tyCtorCtx _ = Nothing
+
+        tyVarCtx :: String -> Maybe (Kind Void)
+        tyVarCtx = const Nothing
+
+        varCtx :: String -> Either String (Ty tyVar)
+        varCtx x = Left x
+
+        ty =
+          tyVariant $
+          tyRowExtend (Label "x") TyInt $
+          tyRowExtend (Label "y") TyInt $
+          TyRowEmpty
+
+      runInferType
+        supply
+        tyCtorCtx
+        tyVarCtx
+        varCtx
+        (tmInject (Label "x") (TmInt 99) `TmAnn` ty)
+
+        `shouldBe`
+
+        Right
+        ( TmApp (TmApp (TmInject $ Label "x") (TmInt 0)) (TmInt 99)
+        , forAll [] ty
+        )
+
+    it "13) +{ y = 99 } (1 + 0) : Variant (x : Int, y : Int)" $ do
+      let
+        tyCtorCtx _ = Nothing
+
+        tyVarCtx :: String -> Maybe (Kind Void)
+        tyVarCtx = const Nothing
+
+        varCtx :: String -> Either String (Ty tyVar)
+        varCtx x = Left x
+
+        ty =
+          tyVariant $
+          tyRowExtend (Label "x") TyInt $
+          tyRowExtend (Label "y") TyInt $
+          TyRowEmpty
+
+      runInferType
+        supply
+        tyCtorCtx
+        tyVarCtx
+        varCtx
+        (tmInject (Label "y") (TmInt 99) `TmAnn` ty)
+
+        `shouldBe`
+
+        Right
+        ( TmApp (TmApp (TmInject $ Label "y") (TmAdd (TmInt 1) (TmInt 0))) (TmInt 99)
+        , forAll [] ty
+        )

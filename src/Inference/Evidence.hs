@@ -1,11 +1,13 @@
 {-# language FlexibleContexts #-}
+{-# language LambdaCase #-}
 {-# language OverloadedLists #-}
 {-# language ScopedTypeVariables #-}
 module Inference.Evidence where
 
 import Bound.Scope (abstract)
 import Control.Lens.Getter (use)
-import Control.Monad.Except (MonadError)
+import Control.Monad (void)
+import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Writer.Strict (WriterT, runWriterT, tell)
 import Data.Either (partitionEithers)
@@ -23,6 +25,72 @@ import Meta
 import Tm
 import Ty
 
+findM :: Monad m => (a -> m Bool) -> [a] -> m (Maybe a)
+findM p =
+  foldr
+    (\a b -> p a >>= \x -> if x then pure (Just a) else b)
+    (pure Nothing)
+
+allA :: Applicative m => (a -> m Bool) -> [a] -> m Bool
+allA p =
+  foldr
+    (\a b -> (&&) <$> p a <*> b)
+    (pure True)
+
+-- | Match two predicate heads
+--
+-- I think later down the track we'll want to do unification here
+matchHead
+  :: (Monad m, Eq tyVar)
+  => MetaT Int Ty tyVar -- ^ Desired head
+  -> MetaT Int Ty tyVar -- ^ Actual head
+  -> TypeM s tyVar ev m Bool
+matchHead desired actual =
+  let
+    (dCount, dHead, dArgs) = unfoldApps $ unMetaT desired
+    (aCount, aHead, aArgs) = unfoldApps $ unMetaT actual
+  in
+  if dHead == aHead && dCount == aCount
+    then allA (\(d, a) -> pure $ d == a) $ zip dArgs aArgs
+    else pure False
+
+-- |
+-- Entailment
+--
+-- @||- (l | {})@
+--
+-- @(l | r) ||- (l | (l' | r))    (l <= l')@
+--
+-- @(l | r) ||- (l | (l' | r))    (l > l')@
+--
+-- @A ||- A@
+entails
+  :: ( MonadError (TypeError Int tyVar tmVar) m
+     , Ord tyVar, Show tyVar
+     )
+  => [MetaT Int Ty tyVar]
+  -> MetaT Int Ty tyVar
+  -> TypeM s tyVar ev m ()
+entails tys ty = do
+  case unMetaT ty of
+    TyApp TyOffset{} TyRowEmpty -> pure ()
+    TyApp (TyOffset l) (TyApp (TyApp TyRowExtend{} _) rest) ->
+      entails tys $ MetaT (TyApp (TyOffset l) rest)
+    _ ->
+      void $
+      maybe (throwError $ TypeCannotDeduce ty $ tys) pure =<<
+      findM (matchHead ty) tys
+
+-- |
+-- Evidence construction
+--
+-- @||- 0 : (l | {})@
+--
+-- @p : (l | r) ||- p : (l | (l' | r))    (l <= l')@
+--
+-- @p : (l | r) ||- p : (l | (l' | r))    (l > l')@
+--
+-- @p : A ||- p : A@
 evidenceFor
   :: ( MonadError (TypeError Int tyVar tmVar) m
      , Ord tyVar, Show tyVar
@@ -48,7 +116,7 @@ evidenceFor ty = do
           (pure . unEvT)
           res
       pure . Just . EvT $
-        if l < l'
+        if l <= l'
         then e
         else TmAdd (TmInt 1) e
     _ -> pure Nothing
@@ -89,8 +157,13 @@ finalizeEvidence
   -> TypeM s tyVar Int m (Tm (Meta Int tyVar) x, [MetaT Int Ty tyVar])
 finalizeEvidence tm = do
   (sat, unsat) <- getEvidence
+  rank <- Rank <$> use inferRank
   let
-    (unsatVals, unsatTypes) = unzip unsat
+    (unsatVals, unsatTypes) =
+      unzip $
+      filter
+        (any (\case; M _ r _ -> r > rank; _ -> False) . unMetaT . snd)
+        unsat
     tm' = tm >>= foldEv (\x -> maybe (pure $ E x) unEvT $ lookup x sat) (pure . V)
     tm'' =
       foldr

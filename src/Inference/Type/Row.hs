@@ -42,8 +42,8 @@ rewriteRow tyCtorCtx rt ll ty =
       if ty == rt
       then error "infinite record"
       else do
-        metaTy <- TyVar <$> newMeta KindType
-        metaRow <- TyVar <$> newMeta KindRow
+        metaTy <- TyVar <$> newMetaInf KindType
+        metaRow <- TyVar <$> newMetaInf KindRow
         equateType (MetaT ty) (MetaT $ tyRowExtend ll metaTy metaRow)
         pure $ Just (ll, metaTy, metaRow)
     _ -> pure Nothing

@@ -10,6 +10,7 @@ import Control.Monad.Trans.Class (lift)
 import Data.Text (Text)
 import Data.Void (Void)
 
+import Evidence
 import Inference.Kind
 import Inference.State
 import Inference.Type
@@ -46,6 +47,25 @@ runInstanceOf supply is ctx a b =
   runKindM supply $
   runTypeM is (instanceOf ctx a b)
 
+runGeneralize ::
+  Supply ->
+  Tm (Meta Int Text) (Ev Int Text) ->
+  Ty (Meta Int Text) ->
+  Either (TypeError Int Text ()) (Tm (Meta Int Text) Text, Ty (Meta Int Text))
+runGeneralize supply a b =
+  runExcept $
+  runKindM supply $
+  runTypeM is (generalize a $ MetaT b)
+  where
+    is =
+      InferState
+      { _inferSupply = supply
+      , _inferEvidence = mempty
+      , _inferKinds = const Nothing
+      , _inferDepth = 0
+      , _inferRank = 0
+      }
+
 isInstanceOf ::
   String ->
   Supply ->
@@ -61,6 +81,7 @@ isInstanceOf text supply t1 t2 =
         , _inferEvidence = mempty
         , _inferKinds = const Nothing
         , _inferDepth = 0
+        , _inferRank = 0
         }
       ctx = const Nothing
 
@@ -82,6 +103,7 @@ notInstanceOf text supply t1 t2 err =
         , _inferEvidence = mempty
         , _inferKinds = const Nothing
         , _inferDepth = 0
+        , _inferRank = 0
         }
       ctx = const Nothing
 
@@ -90,6 +112,28 @@ notInstanceOf text supply t1 t2 err =
 typesSpec :: Supply -> Spec
 typesSpec supply =
   describe "Types" $ do
+    describe "Generalization" $ do
+      it "generalize(0, x(1) -> x(1)) ~> forall a. a -> a" $
+
+        runGeneralize
+        supply
+          (lam (V "x") $ pure (V "x"))
+          (tyArr (pure $ M 0 (Rank 1) 0) (pure $ M 0 (Rank 1) 0))
+
+        `shouldBe`
+
+        Right (lam "x" $ pure "x", forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "a"))
+      it "generalize(0, x(inf) -> x(inf)) ~> forall a. a -> a" $
+
+        runGeneralize
+        supply
+          (lam (V "x") $ pure (V "x"))
+          (tyArr (pure $ M 0 Inf 0) (pure $ M 0 Inf 0))
+
+        `shouldBe`
+
+        Right (lam "x" $ pure "x", forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "a"))
+
     describe "Subsumption" $ do
       isInstanceOf
         "1) |- Int -> Int `instanceOf` forall a. a -> a"
@@ -118,9 +162,10 @@ typesSpec supply =
             , _inferEvidence = mempty
             , _inferKinds =
               \case
-                M 0 99 -> Just KindType
+                M 0 Inf 99 -> Just KindType
                 _ -> Nothing
             , _inferDepth = 0
+            , _inferRank = 0
             }
           ctx = const Nothing
 
@@ -128,12 +173,20 @@ typesSpec supply =
           supply
           iState
           ctx
-          (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ M 0 99))
+          (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ M 0 Inf 99))
           (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "a"))
 
           `shouldBe`
 
           Left (TypeEscaped [S 1 0])
+      isInstanceOf
+        "5) |- forall a. (l | {}) => a `instanceOf` forall a. a"
+        supply
+        (forall_ [N "a"] $
+         tyConstraint (tyOffset (Label "l") TyRowEmpty) $
+         pure (N "a"))
+        (forall_ [N "a"] $
+         pure (N "a"))
 
     it "1) |- (\\x -> x) : forall a. a -> a" $ do
       let
@@ -206,7 +259,7 @@ typesSpec supply =
 
         `shouldBe`
 
-        Left (TypeOccurs 0 (MetaT $ TyApp (TyApp TyArr (TyVar (M 0 0))) (TyVar (M 0 1))))
+        Left (TypeOccurs 1 (MetaT $ TyApp (TyApp TyArr (TyVar (M 0 Inf 1))) (TyVar (M 0 Inf 2))))
 
     it "4) f : X -> Y, x : Z |/- f x : Y" $ do
       let
@@ -236,7 +289,7 @@ typesSpec supply =
 
         `shouldBe`
 
-        Left (TypeMismatch (lift $ TyCtor "X") (lift $ TyCtor "Z"))
+        Left (TypeMismatch (lift $ TyCtor "Z") (lift $ TyCtor "X"))
 
     it "5) |- _.l : forall r a. (l | r) => Record (l : a | r) -> a" $ do
       let
@@ -258,7 +311,7 @@ typesSpec supply =
         `shouldBe`
 
         Right
-          ( lam "offset" $ TmApp (TmSelect $ Label "l") (pure "offset")
+          ( TmSelect (Label "l")
           , forall_ ["r", "a"] $
             tyConstraint (tyOffset (Label "l") (pure "r")) $
             tyArr
@@ -380,8 +433,8 @@ typesSpec supply =
 
         Left
         (TypeMismatch
-            (lift $ tyRowExtend (Label "x") (TyCtor "A") $ pure "r")
-            (lift $ tyRowExtend (Label "y") (TyCtor "A") $ pure "r"))
+            (lift $ tyRowExtend (Label "y") (TyCtor "A") $ pure "r")
+            (lift $ tyRowExtend (Label "x") (TyCtor "A") $ pure "r"))
 
     it "9) r : Row, x : Record (x : A, y : B | r) -> A, y : Record (y : A, X : B | r) |/- x y : A" $ do
       let

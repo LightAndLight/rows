@@ -9,9 +9,17 @@ import Control.Monad.Trans.Class (MonadTrans(..))
 import Data.Deriving (deriveEq1, deriveOrd1, deriveShow1)
 import Data.Functor.Classes (Eq1, Show1, Ord1, eq1, showsPrec1, compare1)
 
+data Rank = Inf | Rank !Int deriving (Eq, Show)
+
+instance Ord Rank where
+  Inf <= Inf = True
+  Inf <= Rank{} = False
+  Rank{} <= Inf = True
+  Rank a <= Rank b = a <= b
+
 data Meta a b
   -- | Flexible meta variable
-  = M { _metaDepth :: Int, _metaValue :: a }
+  = M { _metaDepth :: Int, _metaRank :: Rank, _metaValue :: a }
   -- | Rigid meta variable
   | S { _metaDepth :: Int, _metaValue :: a }
   -- | Type variable
@@ -21,22 +29,22 @@ deriveEq1 ''Meta
 deriveOrd1 ''Meta
 deriveShow1 ''Meta
 
-foldMeta :: (Int -> a -> r) -> (Int -> a -> r) -> (b -> r) -> Meta a b -> r
-foldMeta f _ _ (M n a) = f n a
-foldMeta _ g _ (S n a) = g n a
+foldMeta :: (a -> r) -> (a -> r) -> (b -> r) -> Meta a b -> r
+foldMeta f _ _ (M _ _ a) = f a
+foldMeta _ g _ (S _ a) = g a
 foldMeta _ _ h (N a) = h a
 
 instance Applicative (Meta a) where
   pure = N
   N a <*> N b = N (a b)
-  M n a <*> _ = M n a
+  M n r a <*> _ = M n r a
   S n a <*> _ = S n a
-  _ <*> M n b = M n b
+  _ <*> M n r b = M n r b
   _ <*> S n b = S n b
 
 instance Monad (Meta a) where
   N a >>= f = f a
-  M n a >>= _ = M n a
+  M n r a >>= _ = M n r a
   S n a >>= _ = S n a
 
 newtype MetaT b m a = MetaT { unMetaT :: m (Meta b a) }
@@ -67,14 +75,14 @@ instance Monad m => Monad (MetaT b m) where
       a' <- a
       case a' of
         N x -> unMetaT $ f x
-        M n x -> pure $ M n x
+        M n r x -> pure $ M n r x
         S n x -> pure $ S n x
 
 instance MonadTrans (MetaT b) where
   lift = MetaT . fmap N
 
-meta :: Applicative m => Int -> b -> MetaT b m a
-meta n = MetaT . pure . M n
+meta :: Applicative m => Int -> Rank -> b -> MetaT b m a
+meta n r = MetaT . pure . M n r
 
 skolem :: Applicative m => Int -> b -> MetaT b m a
 skolem n = MetaT . pure . S n

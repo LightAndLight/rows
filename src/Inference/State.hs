@@ -14,7 +14,6 @@ import Evidence
 import Kind
 import Meta
 import Ty
-
 data EvEntry a b c
   = EvEntry c (MetaT a Ty b)
 
@@ -23,7 +22,8 @@ data InferState a b c
   { _inferSupply :: Supply
   , _inferEvidence :: Seq (EvEntry a b c)
   , _inferKinds :: Meta a b -> Maybe (Kind a)
-  , _inferDepth :: !Int -- ^ Binder depth
+  , _inferDepth :: !Int -- ^ Quantification depth
+  , _inferRank :: !Int -- ^ Lambda depth
   }
 makeLenses ''InferState
 
@@ -34,20 +34,30 @@ newEv ty = do
   inferEvidence %= (|> EvEntry v ty)
   pure $ E v
 
-newMeta :: MonadState (InferState Int b c) m => Kind Int -> m (Meta Int b)
-newMeta kind = do
+newMeta
+  :: MonadState (InferState Int b c) m
+  => Rank
+  -> Kind Int
+  -> m (Meta Int b)
+newMeta r kind = do
   (v, supply') <- uses inferSupply freshId
   inferSupply .= supply'
   inferKinds %=
     \f x ->
       f x <|>
       foldMeta
-        (\_ y -> if y == v then Just kind else Nothing)
-        (\_ -> const Nothing)
+        (\y -> if y == v then Just kind else Nothing)
+        (const Nothing)
         (const Nothing)
         x
   d <- use inferDepth
-  pure $ M d v
+  pure $ M d r v
+
+newMetaInf :: MonadState (InferState Int b c) m => Kind Int -> m (Meta Int b)
+newMetaInf = newMeta Inf
+
+newMetaRank :: MonadState (InferState Int b c) m => Kind Int -> m (Meta Int b)
+newMetaRank kind = flip newMeta kind . Rank =<< use inferRank
 
 newSkolem :: MonadState (InferState Int b c) m => Kind Int -> m (Meta Int b)
 newSkolem kind = do
@@ -57,8 +67,8 @@ newSkolem kind = do
     \f x ->
       f x <|>
       foldMeta
-        (\_ -> const Nothing)
-        (\_ y -> if y == v then Just kind else Nothing)
+        (const Nothing)
+        (\y -> if y == v then Just kind else Nothing)
         (const Nothing)
         x
   d <- use inferDepth
@@ -68,3 +78,8 @@ deep :: MonadState (InferState a b c) m => m x -> m x
 deep ma = do
   d <- use inferDepth <* (inferDepth += 1)
   ma <* (inferDepth .= d)
+
+ranked :: MonadState (InferState a b c) m => m x -> m x
+ranked ma = do
+  r <- use inferRank <* (inferRank += 1)
+  ma <* (inferRank .= r)

@@ -1,3 +1,4 @@
+{-# language BangPatterns #-}
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable, DeriveGeneric #-}
 {-# language FlexibleContexts #-}
 {-# language StandaloneDeriving #-}
@@ -114,6 +115,12 @@ tyVariant = TyApp TyVariant
 
 tyOffset :: Label -> Ty a -> Ty a
 tyOffset l = TyApp $ TyOffset l
+
+unfoldApps :: Ty a -> (Int, Ty a, [Ty a])
+unfoldApps = go 0 []
+  where
+    go !n xs (TyApp a b) = go (n+1) (b:xs) a
+    go !n xs a = (n, a, xs)
 
 stripConstraints :: Ty a -> (Ty a, [Ty a])
 stripConstraints ty =

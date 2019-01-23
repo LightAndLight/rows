@@ -51,7 +51,8 @@ combineType (MetaT x) (MetaT y) = MetaT $ go x y
     go (TyVar (N a)) (TyVar (N b)) | a == b = TyVar (N b)
     -- when combining metas, we take the shallowest one, because we always
     -- want to know whether skolems will escape
-    go (TyVar (M n a)) (TyVar (M n' b)) = TyVar $ M (min n n') (min a b)
+    go (TyVar (M n r a)) (TyVar (M n' r' b)) =
+      TyVar $ M (min n n') (min r r') (min a b)
     go (TyApp a b) (TyApp a' b') = TyApp (go a a') (go b b')
     go (TyVar M{}) b = b
     go a (TyVar M{}) = a

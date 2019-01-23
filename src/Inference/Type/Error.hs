@@ -14,7 +14,7 @@ data TypeError a b c
   | TypeMismatch (MetaT a Ty b) (MetaT a Ty b)
   | TypeVarNotFound c
   | TypeKindMismatch (MetaT a Ty b) (Kind Void) (MetaT a Ty b) (Kind Void)
-  | TypeCannotDeduce (MetaT a Ty b)
+  | TypeCannotDeduce (MetaT a Ty b) [MetaT a Ty b]
   | TypeKindError (KindError (Meta Int b))
   | TypeEscaped [Meta a b]
   | TypePolymorphicArg (MetaT a Ty b)

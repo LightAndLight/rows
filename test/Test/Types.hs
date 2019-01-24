@@ -37,7 +37,7 @@ runInferType supply a b c tm =
 
 runInstanceOf ::
   Supply ->
-  InferState Int Text ev ->
+  InferState Int Text Int ->
   (String -> Maybe (Kind Void)) ->
   Ty (Meta Int Text) ->
   Ty (Meta Int Text) ->
@@ -259,7 +259,7 @@ typesSpec supply =
 
         `shouldBe`
 
-        Left (TypeOccurs 1 (MetaT $ TyApp (TyApp TyArr (TyVar (M 0 Inf 1))) (TyVar (M 0 Inf 2))))
+        Left (TypeOccurs 1 (MetaT $ TyApp (TyApp TyArr (TyVar (M 0 (Rank 2) 1))) (TyVar (M 0 (Rank 2) 2))))
 
     it "4) f : X -> Y, x : Z |/- f x : Y" $ do
       let
@@ -289,7 +289,7 @@ typesSpec supply =
 
         `shouldBe`
 
-        Left (TypeMismatch (lift $ TyCtor "Z") (lift $ TyCtor "X"))
+        Left (TypeMismatch (lift $ TyCtor "X") (lift $ TyCtor "Z"))
 
     it "5) |- _.l : forall r a. (l | r) => Record (l : a | r) -> a" $ do
       let
@@ -433,8 +433,8 @@ typesSpec supply =
 
         Left
         (TypeMismatch
-            (lift $ tyRowExtend (Label "y") (TyCtor "A") $ pure "r")
-            (lift $ tyRowExtend (Label "x") (TyCtor "A") $ pure "r"))
+            (lift $ tyRowExtend (Label "x") (TyCtor "A") $ pure "r")
+            (lift $ tyRowExtend (Label "y") (TyCtor "A") $ pure "r"))
 
     it "9) r : Row, x : Record (x : A, y : B | r) -> A, y : Record (y : A, X : B | r) |/- x y : A" $ do
       let

@@ -6,13 +6,15 @@ module Inference.Evidence where
 
 import Bound.Scope (abstract)
 import Control.Lens.Getter (use)
+import Control.Lens.Setter ((.=))
 import Control.Monad (void)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Writer.Strict (WriterT, runWriterT, tell)
 import Data.Either (partitionEithers)
 import Data.Foldable (toList)
-import Data.Sequence (Seq)
+import Data.List (partition)
+import Data.Sequence ((<|), Seq)
 import Data.Traversable (for)
 
 import qualified Data.Sequence as Seq
@@ -41,10 +43,10 @@ allA p =
 --
 -- I think later down the track we'll want to do unification here
 matchHead
-  :: (Monad m, Eq tyVar)
+  :: Eq tyVar
   => MetaT Int Ty tyVar -- ^ Desired head
   -> MetaT Int Ty tyVar -- ^ Actual head
-  -> TypeM s tyVar ev m Bool
+  -> TypeM s tyVar tmVar ev Bool
 matchHead desired actual =
   let
     (dCount, dHead, dArgs) = unfoldApps $ unMetaT desired
@@ -65,12 +67,10 @@ matchHead desired actual =
 --
 -- @A ||- A@
 entails
-  :: ( MonadError (TypeError Int tyVar tmVar) m
-     , Ord tyVar, Show tyVar
-     )
+  :: (Ord tyVar, Show tyVar)
   => [MetaT Int Ty tyVar]
   -> MetaT Int Ty tyVar
-  -> TypeM s tyVar ev m ()
+  -> TypeM s tyVar tmVar ev ()
 entails tys ty = do
   case unMetaT ty of
     TyApp TyOffset{} TyRowEmpty -> pure ()
@@ -92,13 +92,11 @@ entails tys ty = do
 --
 -- @p : A ||- p : A@
 evidenceFor
-  :: ( MonadError (TypeError Int tyVar tmVar) m
-     , Ord tyVar, Show tyVar
-     )
+  :: (Ord tyVar, Show tyVar)
   => MetaT Int Ty tyVar
   -> WriterT
        (Seq (EvEntry Int tyVar Int))
-       (TypeM s tyVar Int m)
+       (TypeM s tyVar tmVar Int)
        (Maybe (EvT Int (Tm (Meta Int tyVar)) x))
 evidenceFor ty = do
   ty' <- lift $ findType ty
@@ -123,10 +121,8 @@ evidenceFor ty = do
 
 getEvidence
   :: forall s tyVar tmVar m x
-   . ( MonadError (TypeError Int tyVar tmVar) m
-     , Ord tyVar, Show tyVar
-     )
-  => TypeM s tyVar Int m
+   . (Ord tyVar, Show tyVar)
+  => TypeM s tyVar tmVar Int
        ( [(Int, EvT Int (Tm (Meta Int tyVar)) x)]
        , [(Int, MetaT Int Ty tyVar)]
        )
@@ -134,7 +130,7 @@ getEvidence = use inferEvidence >>= go
   where
     go
       :: Seq (EvEntry Int tyVar Int)
-      -> TypeM s tyVar Int m
+      -> TypeM s tyVar tmVar Int
            ( [(Int, EvT Int (Tm (Meta Int tyVar)) x)]
            , [(Int, MetaT Int Ty tyVar)]
            )
@@ -146,24 +142,34 @@ getEvidence = use inferEvidence >>= go
           maybe (Right (e, ty)) (Left . (,) e) <$> evidenceFor ty
       (partitionEithers (toList evs') <>) <$> go more
 
+partitionM :: Monad m => (a -> m Bool) -> [a] -> m ([a], [a])
+partitionM p xs = foldr (select p) (pure ([], [])) xs
+  where
+    select :: (a -> m Bool) -> a -> m ([a], [a]) -> m ([a], [a])
+    select p x acc = do
+      ~(ts, fs) <- acc
+      res <- p x
+      if res
+        then pure (x:ts, fs)
+        else pure (ts, x:fs)
+
 finalizeEvidence
   :: forall s tyVar tmVar x m
-   . ( MonadError (TypeError Int tyVar tmVar) m
-     , Ord tyVar
+   . ( Ord tyVar
      , Show tyVar, Show tmVar
      , Show x
      )
   => Tm (Meta Int tyVar) (Ev Int x)
-  -> TypeM s tyVar Int m (Tm (Meta Int tyVar) x, [MetaT Int Ty tyVar])
+  -> TypeM s tyVar tmVar Int (Tm (Meta Int tyVar) x, [MetaT Int Ty tyVar])
 finalizeEvidence tm = do
   (sat, unsat) <- getEvidence
   rank <- Rank <$> use inferRank
   let
-    (unsatVals, unsatTypes) =
-      unzip $
-      filter
-        (any (\case; M _ r _ -> r > rank; _ -> False) . unMetaT . snd)
+    (now, defer) =
+      partition
+        (any (\case; M _ r _ -> r >= rank; _ -> False) . unMetaT . snd)
         unsat
+    (unsatVals, unsatTypes) = unzip now
     tm' = tm >>= foldEv (\x -> maybe (pure $ E x) unEvT $ lookup x sat) (pure . V)
     tm'' =
       foldr
@@ -175,6 +181,7 @@ finalizeEvidence tm = do
                 (const Nothing)))
         tm'
         unsatVals
+  inferEvidence .= foldr (\(a, b) c -> EvEntry a b <| c) mempty defer
   either
     (\x -> error $ "un-abstracted evidence: " <> show x <> "\n\n" <> show unsatVals)
     (\x -> pure (x, unsatTypes))

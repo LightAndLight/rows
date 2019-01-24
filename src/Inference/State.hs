@@ -2,7 +2,6 @@
 {-# language TemplateHaskell #-}
 module Inference.State where
 
-import Control.Applicative ((<|>))
 import Control.Concurrent.Supply (Supply, freshId)
 import Control.Lens.Getter (uses, use)
 import Control.Lens.Setter ((.=), (%=), (+=))
@@ -14,8 +13,7 @@ import Evidence
 import Kind
 import Meta
 import Ty
-data EvEntry a b c
-  = EvEntry c (MetaT a Ty b)
+data EvEntry a b c = EvEntry c (MetaT a Ty b) deriving Eq
 
 data InferState a b c
   = InferState
@@ -33,46 +31,6 @@ newEv ty = do
   inferSupply .= supply'
   inferEvidence %= (|> EvEntry v ty)
   pure $ E v
-
-newMeta
-  :: MonadState (InferState Int b c) m
-  => Rank
-  -> Kind Int
-  -> m (Meta Int b)
-newMeta r kind = do
-  (v, supply') <- uses inferSupply freshId
-  inferSupply .= supply'
-  inferKinds %=
-    \f x ->
-      f x <|>
-      foldMeta
-        (\y -> if y == v then Just kind else Nothing)
-        (const Nothing)
-        (const Nothing)
-        x
-  d <- use inferDepth
-  pure $ M d r v
-
-newMetaInf :: MonadState (InferState Int b c) m => Kind Int -> m (Meta Int b)
-newMetaInf = newMeta Inf
-
-newMetaRank :: MonadState (InferState Int b c) m => Kind Int -> m (Meta Int b)
-newMetaRank kind = flip newMeta kind . Rank =<< use inferRank
-
-newSkolem :: MonadState (InferState Int b c) m => Kind Int -> m (Meta Int b)
-newSkolem kind = do
-  (v, supply') <- uses inferSupply freshId
-  inferSupply .= supply'
-  inferKinds %=
-    \f x ->
-      f x <|>
-      foldMeta
-        (const Nothing)
-        (\y -> if y == v then Just kind else Nothing)
-        (const Nothing)
-        x
-  d <- use inferDepth
-  pure $ S d v
 
 deep :: MonadState (InferState a b c) m => m x -> m x
 deep ma = do

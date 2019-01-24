@@ -1,11 +1,8 @@
 {-# language FlexibleContexts #-}
 module Inference.Type.Row where
 
-import Control.Monad.Except (MonadError)
 import Data.Void (Void)
 
-import Inference.State
-import Inference.Type.Error
 import Inference.Type.Monad
 import Kind
 import Label
@@ -16,17 +13,15 @@ rowTail :: Show a => Ty (Meta Int a) -> Ty (Meta Int a)
 rowTail (TyApp (TyApp TyRowExtend{} _) r) = r
 rowTail (TyVar v) = TyVar v
 rowTail TyRowEmpty = TyRowEmpty
-rowTail a = error $ "rowTail: can't get tail of:\n\n" <> show a
+rowTail _ = undefined
 
 rewriteRow
-  :: ( MonadError (TypeError Int tyVar tmVar) m
-     , Ord tyVar, Show tyVar
-     )
+  :: (Ord tyVar, Show tyVar)
   => (String -> Maybe (Kind Void))
   -> Ty (Meta Int tyVar) -- ^ row tail
   -> Label -- ^ desired label
   -> Ty (Meta Int tyVar) -- ^ term to rewrite
-  -> TypeM s tyVar ev m (Maybe (Label, Ty (Meta Int tyVar), Ty (Meta Int tyVar)))
+  -> TypeM s tyVar tmVar ev (Maybe (Label, Ty (Meta Int tyVar), Ty (Meta Int tyVar)))
 rewriteRow tyCtorCtx rt ll ty =
   case ty of
     TyApp (TyApp (TyRowExtend l) t) r ->

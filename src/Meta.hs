@@ -4,10 +4,11 @@
 {-# language TemplateHaskell #-}
 module Meta where
 
-import Control.Lens.TH (makeWrapped)
+import Control.Lens.TH (makeWrapped, makePrisms)
 import Control.Monad.Trans.Class (MonadTrans(..))
-import Data.Deriving (deriveEq1, deriveOrd1, deriveShow1)
-import Data.Functor.Classes (Eq1, Show1, Ord1, eq1, showsPrec1, compare1)
+import Data.Deriving (deriveEq1, deriveOrd1)
+import Data.Functor.Classes (Eq1(..), Ord1(..), eq1, compare1)
+import Data.IORef (IORef)
 
 data Rank = Inf | Rank !Int deriving (Eq, Show)
 
@@ -19,15 +20,45 @@ instance Ord Rank where
 
 data Meta a b
   -- | Flexible meta variable
-  = M { _metaDepth :: Int, _metaRank :: Rank, _metaValue :: a }
+  = M { _metaDepth :: IORef Int, _metaRank :: IORef Rank, _metaValue :: a }
   -- | Rigid meta variable
-  | S { _metaDepth :: Int, _metaValue :: a }
+  | S { _metaDepth :: IORef Int, _metaValue :: a }
   -- | Type variable
   | N b
-  deriving (Eq, Ord, Show, Functor, Foldable, Traversable)
-deriveEq1 ''Meta
-deriveOrd1 ''Meta
-deriveShow1 ''Meta
+  deriving (Functor, Foldable, Traversable)
+makePrisms ''Meta
+
+instance Eq a => Eq1 (Meta a) where
+  liftEq _ (M _ _ v) (M _ _ v') = v == v'
+  liftEq _ M{} S{} = False
+  liftEq _ M{} N{} = False
+
+  liftEq _ S{} M{} = False
+  liftEq _ (S _ v) (S _ v') = v == v'
+  liftEq _ S{} N{} = False
+
+  liftEq _ N{} M{} = False
+  liftEq _ N{} S{} = False
+  liftEq f (N v) (N v') = f v v'
+
+instance (Eq a, Eq b) => Eq (Meta a b) where
+  (==) = eq1
+
+instance Ord a => Ord1 (Meta a) where
+  liftCompare _ (M _ _ v) (M _ _ v') = compare v v'
+  liftCompare _ M{} S{} = LT
+  liftCompare _ M{} N{} = LT
+
+  liftCompare _ S{} M{} = GT
+  liftCompare _ (S _ v) (S _ v') = compare v v'
+  liftCompare _ S{} N{} = LT
+
+  liftCompare _ N{} M{} = GT
+  liftCompare _ N{} S{} = GT
+  liftCompare f (N v) (N v') = f v v'
+
+instance (Ord a, Ord b) => Ord (Meta a b) where
+  compare = compare1
 
 foldMeta :: (a -> r) -> (a -> r) -> (b -> r) -> Meta a b -> r
 foldMeta f _ _ (M _ _ a) = f a
@@ -50,17 +81,13 @@ instance Monad (Meta a) where
 newtype MetaT b m a = MetaT { unMetaT :: m (Meta b a) }
 deriveEq1 ''MetaT
 deriveOrd1 ''MetaT
-deriveShow1 ''MetaT
 makeWrapped ''MetaT
-
-instance (Eq b, Eq a, Eq1 m) => Eq (MetaT b m a) where
-  (==) = eq1
-
-instance (Show b, Show a, Show1 m) => Show (MetaT b m a) where
-  showsPrec = showsPrec1
 
 instance (Ord b, Ord a, Ord1 m) => Ord (MetaT b m a) where
   compare = compare1
+
+instance (Eq b, Eq a, Eq1 m) => Eq (MetaT b m a) where
+  (==) = eq1
 
 instance Functor m => Functor (MetaT b m) where
   fmap f (MetaT m) = MetaT $ fmap (fmap f) m
@@ -80,9 +107,3 @@ instance Monad m => Monad (MetaT b m) where
 
 instance MonadTrans (MetaT b) where
   lift = MetaT . fmap N
-
-meta :: Applicative m => Int -> Rank -> b -> MetaT b m a
-meta n r = MetaT . pure . M n r
-
-skolem :: Applicative m => Int -> b -> MetaT b m a
-skolem n = MetaT . pure . S n

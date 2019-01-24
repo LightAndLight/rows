@@ -10,6 +10,8 @@
 {-# language RankNTypes #-}
 module Inference.Type where
 
+import Debug.Trace
+
 import Bound.Scope (instantiateVars, fromScope, toScope)
 import Bound.Var (Var(..), unvar)
 import Control.Concurrent.Supply (Supply)
@@ -79,7 +81,7 @@ instantiateTyWith f ty = do
 -- and instead there are only flattened ones like `forall a b c d e f. g`
 instanceOf
   :: ( MonadError (TypeError Int tyVar tmVar) m
-     , Show tyVar, Ord tyVar
+     , Show tyVar, Ord tyVar, Show ev
      )
   => (String -> Maybe (Kind Void)) -- ^ Type constructors
   -> Ty (Meta Int tyVar)
@@ -87,11 +89,17 @@ instanceOf
   -> TypeM s tyVar ev (KindM s' m) ()
 instanceOf tyCtorCtx ty1 ty2 =
   deep $ do
+    () <- trace ("instanceOf l: " <> show ty1) $ pure ()
+    () <- trace ("instanceOf r: " <> show ty2) $ pure ()
     (_, constraints1, s) <- instantiateTyWith newSkolem $ MetaT ty1
     (_, constraints2, s') <- instantiateTyWith newMetaInf $ MetaT ty2
     unifyType tyCtorCtx s s'
     constraints1' <- traverse findType constraints1
     constraints2' <- traverse findType constraints2
+    () <- trace ("cs1: " <> show constraints1') $ pure ()
+    () <- trace ("cs2: " <> show constraints2') $ pure ()
+    evs <- use inferEvidence
+    () <- trace ("evs: " <> show evs) $ pure ()
     traverse_ (constraints1' `entails`) constraints2'
 
 unifyType
@@ -188,16 +196,22 @@ generalize
   -> MetaT Int Ty tyVar -- ^ Type to generalize
   -> TypeM s tyVar Int m (Tm (Meta Int tyVar) x, Ty (Meta Int tyVar))
 generalize tm (MetaT t) = do
+  () <- trace ("generalize tm: " <> show tm) $ pure ()
+  () <- trace ("generalize ty: " <> show t) $ pure ()
   rank <- Rank <$> use inferRank
   (tm', constraints) <- finalizeEvidence tm
-  let ty' = foldr (tyConstraint . unMetaT) t constraints
-  pure (tm', forall_ (vars rank ty') ty')
+  let
+    ty' = foldr (tyConstraint . unMetaT) t constraints
+    ty'' = forall_ (vars rank ty') ty'
+  () <- trace ("generalize constraints: " <> show constraints) $ pure ()
+  () <- trace ("generalize output: " <> show ty'') $ pure ()
+  pure (tm', ty'')
   where
     vars rank ty =
       foldr
         (\a b ->
            case a of
-             M _ r _ | r > rank -> a : b
+             M _ r _ | r >= rank -> a : b
              _ -> b)
         []
         ty
@@ -303,11 +317,16 @@ inferTypeM ctx tyCtorCtx varCtx tm =
       (aTm, aTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT a
 
       (_, EvT aTm', aTy') <- instantiate aTm aTy
-      (MetaT inTy, outTy) <- funmatch tyCtorCtx aTy'
+      (inTy, outTy) <- funmatch tyCtorCtx aTy'
 
       (EvT bTm, MetaT bTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT b
 
-      instanceOf tyCtorCtx bTy inTy
+      () <- trace ("fTm: " <> show aTm') $ pure ()
+      () <- trace ("fTy: " <> show aTy') $ pure ()
+      () <- trace ("xTm: " <> show bTm) $ pure ()
+      () <- trace ("xTy: " <> show bTy) $ pure ()
+      MetaT inTy' <- findType inTy
+      instanceOf tyCtorCtx inTy' bTy
 
       let tm' = TmApp aTm' bTm
       ty' <- findType outTy
@@ -326,12 +345,11 @@ inferTypeM ctx tyCtorCtx varCtx tm =
           (v', vTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT v
           pure (l, v', vTy)
 
+      let tm' = TmRecord $ (\(l, EvT v, _) -> (l, v)) <$> res
       ty' <-
         findType . MetaT $
         tyRecord $
         foldr (\(l, _, MetaT vTy) -> tyRowExtend l vTy) TyRowEmpty res
-
-      let tm' = TmRecord $ (\(l, EvT v, _) -> (l, v)) <$> res
       (tm'', ty'') <- generalize tm' ty'
 
       pure
@@ -339,9 +357,10 @@ inferTypeM ctx tyCtorCtx varCtx tm =
         , MetaT ty''
         )
     TmLam s -> do
-      (argTy, bodyTm, bodyTy) <-
+      (argTy, bodyTm, bodyTy) <- do
+        argTy <- newMetaRank KindType
         ranked $ do
-          argTy <- newMetaRank KindType
+          () <- trace ("RANKED: " <> show argTy) $ pure ()
           (body, bodyTy) <-
             inferTypeM
               (F . ctx)
@@ -365,17 +384,13 @@ inferTypeM ctx tyCtorCtx varCtx tm =
         , MetaT ty'
         )
     TmSelect l -> do
-      metaTy <- newMetaInf KindType
       pure
         ( tm
         , MetaT $
-          -- TyForall 2 . toScope $
-          TyForall 1 . toScope $
+          TyForall 2 . toScope $
           tyConstraint (tyOffset l (pure $ B 0)) $
-          -- tyArr (tyRecord $ tyRowExtend l (pure $ B 1) (pure $ B 0)) $
-          tyArr (tyRecord $ tyRowExtend l (pure $ F metaTy) (pure $ B 0)) $
-          -- pure (B 1)
-          pure (F metaTy)
+          tyArr (tyRecord $ tyRowExtend l (pure $ B 1) (pure $ B 0)) $
+          pure (B 1)
         )
     TmRestrict l -> do
       pure
@@ -451,7 +466,7 @@ inferType supply tyCtorCtx tyVarCtx varCtx tm =
               (const Nothing)
               (fmap (fmap absurd) . tyVarCtx)
         , _inferDepth = 0
-        , _inferRank = 1
+        , _inferRank = 0
         })
      (uncurry closeType <$>
       inferTypeM

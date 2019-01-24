@@ -18,7 +18,7 @@ data TypeError a b c
   | TypeKindError (KindError (Meta Int b))
   | TypeEscaped [Meta a b]
   | TypePolymorphicArg (MetaT a Ty b)
-  deriving (Eq, Show)
+  deriving Eq
 makeClassyPrisms ''TypeError
 
 instance AsKindError (TypeError a b c) (Meta Int b) where

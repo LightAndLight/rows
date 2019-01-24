@@ -1,3 +1,4 @@
+{-# language DataKinds #-}
 {-# language FlexibleContexts #-}
 module Inference.Type.Row where
 
@@ -9,7 +10,7 @@ import Label
 import Meta
 import Ty
 
-rowTail :: Show a => Ty (Meta Int a) -> Ty (Meta Int a)
+rowTail :: Show a => Ty (Meta 'Check Int a) -> Ty (Meta 'Check Int a)
 rowTail (TyApp (TyApp TyRowExtend{} _) r) = r
 rowTail (TyVar v) = TyVar v
 rowTail TyRowEmpty = TyRowEmpty
@@ -18,10 +19,10 @@ rowTail _ = undefined
 rewriteRow
   :: (Ord tyVar, Show tyVar)
   => (String -> Maybe (Kind Void))
-  -> Ty (Meta Int tyVar) -- ^ row tail
+  -> Ty (Meta 'Check Int tyVar) -- ^ row tail
   -> Label -- ^ desired label
-  -> Ty (Meta Int tyVar) -- ^ term to rewrite
-  -> TypeM s tyVar tmVar ev (Maybe (Label, Ty (Meta Int tyVar), Ty (Meta Int tyVar)))
+  -> Ty (Meta 'Check Int tyVar) -- ^ term to rewrite
+  -> TypeM s tyVar tmVar ev (Maybe (Label, Ty (Meta 'Check Int tyVar), Ty (Meta 'Check Int tyVar)))
 rewriteRow tyCtorCtx rt ll ty =
   case ty of
     TyApp (TyApp (TyRowExtend l) t) r ->

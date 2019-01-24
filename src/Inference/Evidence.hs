@@ -1,3 +1,4 @@
+{-# language DataKinds #-}
 {-# language FlexibleContexts #-}
 {-# language LambdaCase #-}
 {-# language OverloadedLists #-}
@@ -8,17 +9,17 @@ import Bound.Scope (abstract)
 import Control.Lens.Getter (use)
 import Control.Lens.Setter ((.=))
 import Control.Monad (void)
-import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.Except (throwError)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Writer.Strict (WriterT, runWriterT, tell)
 import Data.Either (partitionEithers)
 import Data.Foldable (toList)
-import Data.List (partition)
 import Data.Sequence ((<|), Seq)
 import Data.Traversable (for)
 
 import qualified Data.Sequence as Seq
 
+import Data.List.Utils (partitionM, anyA)
 import Evidence
 import Inference.State
 import Inference.Type.Error
@@ -44,8 +45,8 @@ allA p =
 -- I think later down the track we'll want to do unification here
 matchHead
   :: Eq tyVar
-  => MetaT Int Ty tyVar -- ^ Desired head
-  -> MetaT Int Ty tyVar -- ^ Actual head
+  => MetaT 'Check Int Ty tyVar -- ^ Desired head
+  -> MetaT 'Check Int Ty tyVar -- ^ Actual head
   -> TypeM s tyVar tmVar ev Bool
 matchHead desired actual =
   let
@@ -68,18 +69,20 @@ matchHead desired actual =
 -- @A ||- A@
 entails
   :: (Ord tyVar, Show tyVar)
-  => [MetaT Int Ty tyVar]
-  -> MetaT Int Ty tyVar
+  => [MetaT 'Check Int Ty tyVar]
+  -> MetaT 'Check Int Ty tyVar
   -> TypeM s tyVar tmVar ev ()
 entails tys ty = do
   case unMetaT ty of
     TyApp TyOffset{} TyRowEmpty -> pure ()
     TyApp (TyOffset l) (TyApp (TyApp TyRowExtend{} _) rest) ->
       entails tys $ MetaT (TyApp (TyOffset l) rest)
-    _ ->
+    _ -> do
+      dTy <- displayType ty
+      dTys <- traverse displayType tys
       void $
-      maybe (throwError $ TypeCannotDeduce ty $ tys) pure =<<
-      findM (matchHead ty) tys
+        maybe (throwError $ TypeCannotDeduce dTy dTys) pure =<<
+        findM (matchHead ty) tys
 
 -- |
 -- Evidence construction
@@ -93,11 +96,11 @@ entails tys ty = do
 -- @p : A ||- p : A@
 evidenceFor
   :: (Ord tyVar, Show tyVar)
-  => MetaT Int Ty tyVar
+  => MetaT 'Check Int Ty tyVar
   -> WriterT
        (Seq (EvEntry Int tyVar Int))
        (TypeM s tyVar tmVar Int)
-       (Maybe (EvT Int (Tm (Meta Int tyVar)) x))
+       (Maybe (EvT Int (Tm (Meta 'Check Int tyVar)) x))
 evidenceFor ty = do
   ty' <- lift $ findType ty
   case unMetaT ty' of
@@ -120,19 +123,19 @@ evidenceFor ty = do
     _ -> pure Nothing
 
 getEvidence
-  :: forall s tyVar tmVar m x
+  :: forall s tyVar tmVar x
    . (Ord tyVar, Show tyVar)
   => TypeM s tyVar tmVar Int
-       ( [(Int, EvT Int (Tm (Meta Int tyVar)) x)]
-       , [(Int, MetaT Int Ty tyVar)]
+       ( [(Int, EvT Int (Tm (Meta 'Check Int tyVar)) x)]
+       , [(Int, MetaT 'Check Int Ty tyVar)]
        )
 getEvidence = use inferEvidence >>= go
   where
     go
       :: Seq (EvEntry Int tyVar Int)
       -> TypeM s tyVar tmVar Int
-           ( [(Int, EvT Int (Tm (Meta Int tyVar)) x)]
-           , [(Int, MetaT Int Ty tyVar)]
+           ( [(Int, EvT Int (Tm (Meta 'Check Int tyVar)) x)]
+           , [(Int, MetaT 'Check Int Ty tyVar)]
            )
     go evs | Seq.null evs = pure mempty
     go evs = do
@@ -142,33 +145,22 @@ getEvidence = use inferEvidence >>= go
           maybe (Right (e, ty)) (Left . (,) e) <$> evidenceFor ty
       (partitionEithers (toList evs') <>) <$> go more
 
-partitionM :: Monad m => (a -> m Bool) -> [a] -> m ([a], [a])
-partitionM p xs = foldr (select p) (pure ([], [])) xs
-  where
-    select :: (a -> m Bool) -> a -> m ([a], [a]) -> m ([a], [a])
-    select p x acc = do
-      ~(ts, fs) <- acc
-      res <- p x
-      if res
-        then pure (x:ts, fs)
-        else pure (ts, x:fs)
-
 finalizeEvidence
-  :: forall s tyVar tmVar x m
+  :: forall s tyVar tmVar x
    . ( Ord tyVar
      , Show tyVar, Show tmVar
      , Show x
      )
-  => Tm (Meta Int tyVar) (Ev Int x)
-  -> TypeM s tyVar tmVar Int (Tm (Meta Int tyVar) x, [MetaT Int Ty tyVar])
+  => Tm (Meta 'Check Int tyVar) (Ev Int x)
+  -> TypeM s tyVar tmVar Int (Tm (Meta 'Check Int tyVar) x, [MetaT 'Check Int Ty tyVar])
 finalizeEvidence tm = do
   (sat, unsat) <- getEvidence
   rank <- Rank <$> use inferRank
+  (now, defer) <-
+    partitionM
+      (anyA (fmap (maybe False (>= rank)) . metaRank) . unMetaT . snd)
+      unsat
   let
-    (now, defer) =
-      partition
-        (any (\case; M _ r _ -> r >= rank; _ -> False) . unMetaT . snd)
-        unsat
     (unsatVals, unsatTypes) = unzip now
     tm' = tm >>= foldEv (\x -> maybe (pure $ E x) unEvT $ lookup x sat) (pure . V)
     tm'' =

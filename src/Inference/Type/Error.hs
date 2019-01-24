@@ -10,16 +10,16 @@ import Meta
 import Ty
 
 data TypeError a b c
-  = TypeOccurs a (MetaT a Ty b)
-  | TypeMismatch (MetaT a Ty b) (MetaT a Ty b)
+  = TypeOccurs a (DisplayMetaT a Ty b)
+  | TypeMismatch (DisplayMetaT a Ty b) (DisplayMetaT a Ty b)
   | TypeVarNotFound c
-  | TypeKindMismatch (MetaT a Ty b) (Kind Void) (MetaT a Ty b) (Kind Void)
-  | TypeCannotDeduce (MetaT a Ty b) [MetaT a Ty b]
-  | TypeKindError (KindError (Meta Int b))
-  | TypeEscaped [Meta a b]
-  | TypePolymorphicArg (MetaT a Ty b)
+  | TypeKindMismatch (DisplayMetaT a Ty b) (Kind Void) (DisplayMetaT a Ty b) (Kind Void)
+  | TypeCannotDeduce (DisplayMetaT a Ty b) [DisplayMetaT a Ty b]
+  | TypeKindError (KindError (DisplayMeta Int b))
+  | TypeEscaped [DisplayMeta a b]
+  | TypePolymorphicArg (DisplayMetaT a Ty b)
   deriving Eq
 makeClassyPrisms ''TypeError
 
-instance AsKindError (TypeError a b c) (Meta Int b) where
+instance AsKindError (TypeError a b c) (DisplayMeta Int b) where
   _KindError = _TypeKindError

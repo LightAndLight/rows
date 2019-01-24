@@ -1,6 +1,9 @@
+{-# language DataKinds, TypeFamilies, KindSignatures #-}
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 {-# language FlexibleContexts #-}
 {-# language FlexibleInstances, MultiParamTypeClasses, TypeFamilies #-}
+{-# language QuantifiedConstraints #-}
+{-# language StandaloneDeriving #-}
 {-# language TemplateHaskell #-}
 module Meta where
 
@@ -8,7 +11,7 @@ import Control.Lens.TH (makeWrapped, makePrisms)
 import Control.Monad.Trans.Class (MonadTrans(..))
 import Data.Deriving (deriveEq1, deriveOrd1)
 import Data.Functor.Classes (Eq1(..), Ord1(..), eq1, compare1)
-import Data.IORef (IORef)
+import Data.IORef (IORef, readIORef)
 
 data Rank = Inf | Rank !Int deriving (Eq, Show)
 
@@ -18,17 +21,48 @@ instance Ord Rank where
   Rank{} <= Inf = True
   Rank a <= Rank b = a <= b
 
-data Meta a b
+data MetaStage = Check | Display
+type family MetaCell (m :: MetaStage) (x :: *) where
+  MetaCell 'Display x = x
+  MetaCell 'Check x = IORef x
+
+data Meta (s :: MetaStage) a b
   -- | Flexible meta variable
-  = M { _metaDepth :: IORef Int, _metaRank :: IORef Rank, _metaValue :: a }
+  = M { _metaDepth :: MetaCell s Int, _metaRank :: MetaCell s Rank, _metaValue :: a }
   -- | Rigid meta variable
-  | S { _metaDepth :: IORef Int, _metaValue :: a }
+  | S { _metaDepth :: MetaCell s Int, _metaValue :: a }
   -- | Type variable
   | N b
   deriving (Functor, Foldable, Traversable)
 makePrisms ''Meta
 
-instance Eq a => Eq1 (Meta a) where
+deriving instance (Show a, Show b) => Show (Meta 'Display a b)
+
+newtype DisplayMeta a b = DisplayMeta (Meta 'Display a b)
+  deriving Show
+
+instance (Eq a, Eq b) => Eq (DisplayMeta a b) where
+  DisplayMeta a == DisplayMeta b =
+    case (a, b) of
+      (M x y z, M x' y' z') -> x == x' && y == y' && z == z'
+      (S x y, S x' y') -> x == x' && y == y'
+      (N x, N x') -> x == x'
+      _ -> False
+
+displayMeta :: Meta 'Check a b -> IO (DisplayMeta a b)
+displayMeta m =
+  DisplayMeta <$>
+  case m of
+    M a b c -> do
+      a' <- readIORef a
+      b' <- readIORef b
+      pure $ M a' b' c
+    S a b -> do
+      a' <- readIORef a
+      pure $ S a' b
+    N a -> pure $ N a
+
+instance Eq a => Eq1 (Meta s a) where
   liftEq _ (M _ _ v) (M _ _ v') = v == v'
   liftEq _ M{} S{} = False
   liftEq _ M{} N{} = False
@@ -41,10 +75,10 @@ instance Eq a => Eq1 (Meta a) where
   liftEq _ N{} S{} = False
   liftEq f (N v) (N v') = f v v'
 
-instance (Eq a, Eq b) => Eq (Meta a b) where
+instance (Eq a, Eq b) => Eq (Meta s a b) where
   (==) = eq1
 
-instance Ord a => Ord1 (Meta a) where
+instance Ord a => Ord1 (Meta s a) where
   liftCompare _ (M _ _ v) (M _ _ v') = compare v v'
   liftCompare _ M{} S{} = LT
   liftCompare _ M{} N{} = LT
@@ -57,15 +91,15 @@ instance Ord a => Ord1 (Meta a) where
   liftCompare _ N{} S{} = GT
   liftCompare f (N v) (N v') = f v v'
 
-instance (Ord a, Ord b) => Ord (Meta a b) where
+instance (Ord a, Ord b) => Ord (Meta s a b) where
   compare = compare1
 
-foldMeta :: (a -> r) -> (a -> r) -> (b -> r) -> Meta a b -> r
+foldMeta :: (a -> r) -> (a -> r) -> (b -> r) -> Meta s a b -> r
 foldMeta f _ _ (M _ _ a) = f a
 foldMeta _ g _ (S _ a) = g a
 foldMeta _ _ h (N a) = h a
 
-instance Applicative (Meta a) where
+instance Applicative (Meta s a) where
   pure = N
   N a <*> N b = N (a b)
   M n r a <*> _ = M n r a
@@ -73,30 +107,50 @@ instance Applicative (Meta a) where
   _ <*> M n r b = M n r b
   _ <*> S n b = S n b
 
-instance Monad (Meta a) where
+instance Monad (Meta s a) where
   N a >>= f = f a
   M n r a >>= _ = M n r a
   S n a >>= _ = S n a
 
-newtype MetaT b m a = MetaT { unMetaT :: m (Meta b a) }
+newtype MetaT s b m a = MetaT { unMetaT :: m (Meta s b a) }
 deriveEq1 ''MetaT
 deriveOrd1 ''MetaT
 makeWrapped ''MetaT
 
-instance (Ord b, Ord a, Ord1 m) => Ord (MetaT b m a) where
+deriving instance
+  ( Show a
+  , Show b
+  , forall x. Show x => (Show (m x))
+  ) => Show (MetaT 'Display a m b)
+
+newtype DisplayMetaT b m a = DisplayMetaT (m (DisplayMeta b a))
+
+deriving instance
+  (Eq a, Eq b, forall x. Eq x => Eq (m x)) => Eq (DisplayMetaT a m b)
+
+deriving instance
+  (Show a, Show b, forall x. Show x => Show (m x)) => Show (DisplayMetaT a m b)
+
+displayMetaT ::
+  Traversable m =>
+  MetaT 'Check a m b ->
+  IO (DisplayMetaT a m b)
+displayMetaT (MetaT s) = DisplayMetaT <$> traverse displayMeta s
+
+instance (Ord b, Ord a, Ord1 m) => Ord (MetaT s b m a) where
   compare = compare1
 
-instance (Eq b, Eq a, Eq1 m) => Eq (MetaT b m a) where
+instance (Eq b, Eq a, Eq1 m) => Eq (MetaT s b m a) where
   (==) = eq1
 
-instance Functor m => Functor (MetaT b m) where
+instance Functor m => Functor (MetaT s b m) where
   fmap f (MetaT m) = MetaT $ fmap (fmap f) m
 
-instance Applicative m => Applicative (MetaT b m) where
+instance Applicative m => Applicative (MetaT s b m) where
   pure = MetaT . pure . pure
   MetaT a <*> MetaT b = MetaT $ (<*>) <$> a <*> b
 
-instance Monad m => Monad (MetaT b m) where
+instance Monad m => Monad (MetaT s b m) where
   MetaT a >>= f =
     MetaT $ do
       a' <- a
@@ -105,5 +159,5 @@ instance Monad m => Monad (MetaT b m) where
         M n r x -> pure $ M n r x
         S n x -> pure $ S n x
 
-instance MonadTrans (MetaT b) where
+instance MonadTrans (MetaT s b) where
   lift = MetaT . fmap N

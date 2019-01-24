@@ -1,3 +1,4 @@
+{-# language DataKinds #-}
 {-# language FlexibleContexts #-}
 {-# language TemplateHaskell #-}
 module Inference.State where
@@ -13,19 +14,22 @@ import Evidence
 import Kind
 import Meta
 import Ty
-data EvEntry a b c = EvEntry c (MetaT a Ty b) deriving Eq
+data EvEntry a b c = EvEntry c (MetaT 'Check a Ty b) deriving Eq
 
 data InferState a b c
   = InferState
   { _inferSupply :: Supply
   , _inferEvidence :: Seq (EvEntry a b c)
-  , _inferKinds :: Meta a b -> Maybe (Kind a)
+  , _inferKinds :: Meta 'Check a b -> Maybe (Kind a)
   , _inferDepth :: !Int -- ^ Quantification depth
   , _inferRank :: !Int -- ^ Lambda depth
   }
 makeLenses ''InferState
 
-newEv :: MonadState (InferState a b Int) m => MetaT a Ty b -> m (Ev Int x)
+newEv ::
+  MonadState (InferState a b Int) m =>
+  MetaT 'Check a Ty b ->
+  m (Ev Int x)
 newEv ty = do
   (v, supply') <- uses inferSupply freshId
   inferSupply .= supply'

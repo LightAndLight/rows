@@ -16,7 +16,8 @@ category:            Language
 extra-source-files:  CHANGELOG.md
 
 library
-  exposed-modules:     Desugar
+  exposed-modules:     Data.List.Utils
+                     , Desugar
                      , Desugar.Sections
                      , Eval
                      , Evidence

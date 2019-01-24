@@ -17,8 +17,8 @@ import Control.Lens.Plated (plate)
 import Control.Lens.Review ((#))
 import Control.Lens.Traversal (traverseOf)
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.Trans.Class (lift)
-import Control.Monad.State (StateT, evalStateT, state)
+import Control.Monad.Trans.Class (MonadTrans, lift)
+import Control.Monad.State (MonadState(..), StateT, evalStateT, state)
 import Data.Equivalence.Monad (EquivT, equate, classDesc, runEquivT)
 import Data.Foldable (for_)
 import Data.Traversable (for)
@@ -33,6 +33,13 @@ newtype KindM s m a
   { unKindM :: StateT Supply (EquivT s (Kind Int) (Kind Int) m) a
   } deriving (Functor, Applicative, Monad)
 deriving instance MonadError e m => MonadError e (KindM s m)
+
+instance MonadState s m => MonadState s (KindM s' m) where
+  get = lift get
+  put = lift . put
+
+instance MonadTrans (KindM s) where
+  lift = KindM . lift . lift
 
 combineKind :: Kind Int -> Kind Int -> Kind Int
 combineKind KindType KindType = KindType

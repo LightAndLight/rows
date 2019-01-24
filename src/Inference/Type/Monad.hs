@@ -1,6 +1,9 @@
+{-# language DataKinds #-}
+{-# language GADTs #-}
 {-# language FlexibleContexts #-}
 {-# language FlexibleInstances, MultiParamTypeClasses #-}
 {-# language GeneralizedNewtypeDeriving #-}
+{-# language QuantifiedConstraints #-}
 {-# language RankNTypes #-}
 {-# language ScopedTypeVariables #-}
 {-# language StandaloneDeriving #-}
@@ -19,10 +22,7 @@ import Control.Monad.Except (ExceptT, MonadError, runExceptT)
 import Control.Monad.State (StateT, MonadState, evalStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Equivalence.Monad (EquivT, runEquivT, equate, classDesc)
-import Data.Functor.Classes (Show1(..))
 import Data.IORef (newIORef, readIORef, writeIORef, modifyIORef')
-import Data.Traversable (for)
-import Text.Show (showListWith)
 
 import Inference.State
 import Inference.Type.Error
@@ -35,7 +35,7 @@ newtype TypeM s tyVar tmVar ev a
   { unTypeM ::
       StateT
         (InferState Int tyVar ev)
-        (EquivT s (MetaT Int Ty tyVar) (MetaT Int Ty tyVar)
+        (EquivT s (MetaT 'Check Int Ty tyVar) (MetaT 'Check Int Ty tyVar)
            (ExceptT (TypeError Int tyVar tmVar) IO))
         a
   } deriving
@@ -44,44 +44,30 @@ newtype TypeM s tyVar tmVar ev a
   , MonadError (TypeError Int tyVar tmVar)
   )
 
+displayType
+  :: Traversable b
+  => MetaT 'Check a b c
+  -> TypeM s tyVar tmVar ev (DisplayMetaT a b c)
+displayType = TypeM . lift . lift . lift . displayMetaT
+
 showMetaT
-  :: (Show a, Show1 b, Show c, Traversable b)
-  => MetaT a b c
+  :: (Show a, forall x. Show x => Show (b x), Show c, Traversable b)
+  => MetaT 'Check a b c
   -> TypeM s tyVar tmVar ev String
-showMetaT (MetaT m) = do
-  m' <- for m $ \x ->
-    case x of
-      M depth rank v -> do
-        d <- TypeM . lift . lift . lift $ readIORef depth
-        r <- TypeM . lift . lift . lift $ readIORef rank
-        pure $
-          showString "M " .
-          showString (show d) .
-          showString " " .
-          showString (show r) .
-          showString " " .
-          showsPrec 11 v
-      S depth v -> do
-        d <- TypeM . lift . lift . lift $ readIORef depth
-        pure $
-          showString "S " .
-          showString (show d) .
-          showString " " .
-          showsPrec 11 v
-      N v ->
-        pure $
-        showString "N " .
-        showsPrec 11 v
-  pure $
-    showString "MetaT " .
-    liftShowsPrec (\_ -> showParen True) (showListWith id) 11 m' $
-    ""
+showMetaT = fmap show . displayType
+
+eqMetaT
+  :: (Eq a, forall x. Eq x => Eq (b x), Eq c, Traversable b)
+  => MetaT 'Check a b c
+  -> MetaT 'Check a b c
+  -> TypeM s tyVar tmVar ev Bool
+eqMetaT ma mb = (==) <$> displayType ma <*> displayType mb
 
 combineType
   :: (Show a, Show b, Ord a, Eq b)
-  => MetaT a Ty b
-  -> MetaT a Ty b
-  -> MetaT a Ty b
+  => MetaT 'Check a Ty b
+  -> MetaT 'Check a Ty b
+  -> MetaT 'Check a Ty b
 combineType (MetaT x) (MetaT y) = MetaT $ go x y
   where
     go TyArr TyArr = TyArr
@@ -108,16 +94,19 @@ runTypeM
   IO (Either (TypeError Int tyVar tmVar) a)
 runTypeM is ma = runExceptT (runEquivT id combineType (go ma))
   where
-    -- go ::
-      -- forall s.
-      -- TypeM s tyVar ev a ->
-      -- EquivT s (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) IO a
+    go ::
+      forall s.
+      TypeM s tyVar tmVar ev a ->
+      EquivT s
+        (MetaT 'Check Int Ty tyVar)
+        (MetaT 'Check Int Ty tyVar)
+        (ExceptT (TypeError Int tyVar tmVar) IO) a
     go (TypeM mb) = evalStateT mb is
 
 equateType ::
   Ord tyVar =>
-  MetaT Int Ty tyVar ->
-  MetaT Int Ty tyVar ->
+  MetaT 'Check Int Ty tyVar ->
+  MetaT 'Check Int Ty tyVar ->
   TypeM s tyVar tmVar ev ()
 equateType a b = go (unMetaT a) (unMetaT b)
   where
@@ -158,13 +147,13 @@ equateType a b = go (unMetaT a) (unMetaT b)
 
 findType ::
   Ord tyVar =>
-  MetaT Int Ty tyVar ->
-  TypeM s tyVar tmVar ev (MetaT Int Ty tyVar)
+  MetaT 'Check Int Ty tyVar ->
+  TypeM s tyVar tmVar ev (MetaT 'Check Int Ty tyVar)
 findType = TypeM . _Wrapped go
   where
     go = plate go <=< _Unwrapped (lift . classDesc)
 
-newSkolem :: Kind Int -> TypeM s tyVar tmVar ev (Meta Int b)
+newSkolem :: Kind Int -> TypeM s tyVar tmVar ev (Meta 'Check Int b)
 newSkolem kind = do
   (v, supply') <- uses inferSupply freshId
   inferSupply .= supply'
@@ -183,7 +172,7 @@ newSkolem kind = do
 newMeta
   :: Rank
   -> Kind Int
-  -> TypeM s tyVar tmVar ev (Meta Int b)
+  -> TypeM s tyVar tmVar ev (Meta 'Check Int b)
 newMeta r kind = do
   (v, supply') <- uses inferSupply freshId
   inferSupply .= supply'
@@ -200,12 +189,20 @@ newMeta r kind = do
   rank <- TypeM . lift . lift . lift $ newIORef r
   pure $ M depth rank v
 
-newMetaInf :: Kind Int -> TypeM s tyVar tmVar ev (Meta Int b)
+newMetaInf :: Kind Int -> TypeM s tyVar tmVar ev (Meta 'Check Int b)
 newMetaInf = newMeta Inf
 
-newMetaRank :: Kind Int -> TypeM s tyVar tmVar ev (Meta Int b)
+newMetaRank :: Kind Int -> TypeM s tyVar tmVar ev (Meta 'Check Int b)
 newMetaRank kind = flip newMeta kind . Rank =<< use inferRank
 
-rankOf :: Meta a b -> TypeM s tyVar tmVar ev (Maybe Rank)
-rankOf (M _ r _) = TypeM . lift . lift . lift $ Just <$> readIORef r
-rankOf _ = pure Nothing
+metaRank :: Meta 'Check a b -> TypeM s tyVar tmVar ev (Maybe Rank)
+metaRank (M _ r _) = TypeM . lift . lift . lift $ Just <$> readIORef r
+metaRank _ = pure Nothing
+
+skolemDepth :: Meta 'Check a b -> TypeM s tyVar tmVar ev (Maybe Int)
+skolemDepth (S d _) = TypeM . lift . lift . lift $ Just <$> readIORef d
+skolemDepth _ = pure Nothing
+
+metaDepth :: Meta 'Check a b -> TypeM s tyVar tmVar ev (Maybe Int)
+metaDepth (M d _ _) = TypeM . lift . lift . lift $ Just <$> readIORef d
+metaDepth _ = pure Nothing

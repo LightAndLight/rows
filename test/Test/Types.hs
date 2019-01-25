@@ -7,6 +7,7 @@ import Bound.Scope (toScope)
 import Bound.Var (Var(..))
 import Control.Concurrent.Supply (Supply)
 import Control.Lens.Review ((#))
+import Control.Monad (void)
 import Control.Monad.Except (ExceptT(..), runExceptT)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Class (lift)
@@ -46,13 +47,13 @@ runInstanceOf ::
   InferState Int Text Text ->
   (String -> Maybe (Kind Void)) ->
   Ty (Meta 'Check Int Text) ->
+  Tm (Meta 'Check Int Text) (Ev Text) ->
   Ty (Meta 'Check Int Text) ->
   m (Either (TypeError Int Text Text) ())
-runInstanceOf supply is ctx a b =
+runInstanceOf supply is ctx a b c =
   liftIO $
-  runTypeM is $
-  runKindM supply $
-  instanceOf ctx a b
+  runTypeM is
+  (runKindM supply (void $ instanceOf id ctx (MetaT a) (EvT b, MetaT c)))
 
 runGeneralize ::
   MonadIO m =>
@@ -86,9 +87,10 @@ isInstanceOf ::
   String ->
   Supply ->
   Ty (Meta 'Check Int Text) ->
+  Tm (Meta 'Check Int Text) (Ev Text) ->
   Ty (Meta 'Check Int Text) ->
   Spec
-isInstanceOf text supply t1 t2 =
+isInstanceOf text supply t1 tm t2 =
   it text $ do
     let
       iState =
@@ -101,17 +103,18 @@ isInstanceOf text supply t1 t2 =
         }
       ctx = const Nothing
 
-    res <- runInstanceOf supply iState ctx t1 t2
+    res <- runInstanceOf supply iState ctx t1 tm t2
     res `shouldBe` Right ()
 
 notInstanceOf ::
   String ->
   Supply ->
   Ty (Meta 'Check Int Text) ->
+  Tm (Meta 'Check Int Text) (Ev Text) ->
   Ty (Meta 'Check Int Text) ->
   TypeError Int Text Text ->
   Spec
-notInstanceOf text supply t1 t2 err =
+notInstanceOf text supply t1 tm t2 err =
   it text $ do
     let
       iState =
@@ -124,7 +127,7 @@ notInstanceOf text supply t1 t2 err =
         }
       ctx = const Nothing
 
-    res <- runInstanceOf supply iState ctx t1 t2
+    res <- runInstanceOf supply iState ctx t1 tm t2
     res `shouldBe` Left err
 
 typesSpec :: Supply -> Spec
@@ -166,11 +169,13 @@ typesSpec supply =
         "1) |- Int -> Int `instanceOf` forall a. a -> a"
         supply
         (tyArr TyInt TyInt)
+        (lam (V "x") $ pure (V "x"))
         (forall_ [N "a"] (tyArr (pure $ N "a") (pure $ N "a")))
       notInstanceOf
         "2) |- forall a. a -> a `notInstanceOf` Int -> Int"
         supply
         (forall_ [N "a"] (tyArr (pure $ N "a") (pure $ N "a")))
+        (lam (V "x") $ pure (V "x"))
         (tyArr TyInt TyInt)
         (TypeMismatch (liftDM $ S 1 0) (lift TyInt))
       isInstanceOf
@@ -180,6 +185,7 @@ typesSpec supply =
          tyArr
            (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "b"))
            (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "b")))
+        (lam (V "x") $ pure (V "x"))
         (forall_ [N "a"] (tyArr (pure $ N "a") (pure $ N "a")))
       it "4) |- forall a. a -> b `notInstanceOf` forall a. a -> a" $ do
         let
@@ -202,17 +208,17 @@ typesSpec supply =
         res <-
           runInstanceOf supply iState ctx
             (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ M d0 inf 99))
+            (lam (V "x") $ pure (V "x"))
             (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "a"))
 
         res `shouldBe` Left (TypeEscaped [liftDM $ S 1 0])
       isInstanceOf
-        "5) |- forall a. (l | {}) => a `instanceOf` forall a. a"
+        "5) |- (l | {}) => Record {} `instanceOf` Record {}"
         supply
-        (forall_ [N "a"] $
-         tyConstraint (tyOffset (Label "l") TyRowEmpty) $
-         pure (N "a"))
-        (forall_ [N "a"] $
-         pure (N "a"))
+        (tyConstraint (tyOffset (Label "l") TyRowEmpty) $
+         tyRecord TyRowEmpty)
+        (TmRecord [])
+        (tyRecord TyRowEmpty)
 
     it "1) |- (\\x -> x) : forall a. a -> a" $ do
       let
@@ -531,16 +537,23 @@ typesSpec supply =
             , (Label "x", TmInt 99)
             ])
 
+      let
+        fun =
+          lam "evf" $
+          lam "evx" $
+          lam "r" $
+          TmApp
+            (TmApp (TmApp (TmSelect $ Label "f") (pure "evf")) (pure "r"))
+            (TmApp (TmApp (TmSelect $ Label "x") (TmAdd (TmInt 1) (pure "evx"))) (pure "r"))
+
       res `shouldBe`
         Right
           ( TmApp
-              (lam "r" $
-                TmApp
-                  (TmApp (TmApp (TmSelect $ Label "f") (TmInt 0)) (pure "r"))
-                  (TmApp (TmApp (TmSelect $ Label "x") (TmAdd (TmInt 1) (TmInt 0))) (pure "r")))
-              (TmApp (TmApp (TmApp (TmExtend $ Label "f") (TmInt 0)) (lam "x" $ pure "x")) $
-                TmApp (TmApp (TmApp (TmExtend $ Label "x") (TmInt 0)) (TmInt 99)) $
-                (TmRecord []))
+              (TmApp (TmApp fun (TmInt 0)) (TmInt 0))
+              (TmRecord
+               [ (Label "f", lam "x" $ pure "x")
+               , (Label "x", TmInt 99)
+               ])
           , forall_ [] TyInt
           )
 
@@ -566,7 +579,10 @@ typesSpec supply =
 
       res `shouldBe`
         Right
-        ( TmApp (TmApp (TmInject $ Label "x") (TmInt 0)) (TmInt 99)
+        ( TmApp
+            (lam "ev" $
+             TmApp (TmApp (TmInject $ Label "x") (pure "ev")) (TmInt 99))
+            (TmInt 0)
         , forall_ [] ty
         )
 
@@ -592,6 +608,142 @@ typesSpec supply =
 
       res `shouldBe`
         Right
-        ( TmApp (TmApp (TmInject $ Label "y") (TmAdd (TmInt 1) (TmInt 0))) (TmInt 99)
+        ( TmApp
+            (lam "ev" $
+             TmApp (TmApp (TmInject $ Label "y") (pure "ev")) (TmInt 99))
+            (TmAdd (TmInt 1) (TmInt 0))
         , forall_ [] ty
+        )
+
+    it "14) |- \\r -> *{ id = \\x -> x | r } : forall r a. (id | r) => Record r -> Record (id : a -> a | r)" $ do
+      let
+        tyCtorCtx _ = Nothing
+
+        tyVarCtx :: String -> Maybe (Kind Void)
+        tyVarCtx = const Nothing
+
+        varCtx :: String -> Either String (Ty tyVar)
+        varCtx x = Left x
+
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        lam "r" $
+        tmExtend (Label "id") (lam "x" $ pure "x") (pure "r")
+
+      res `shouldBe`
+        Right
+        ( lam "xev" $
+          lam "r" $
+          TmApp
+            (TmApp
+               (lam "xev1" $
+                TmApp
+                  (TmApp (TmExtend (Label "id")) (pure "xev1"))
+                  (lam "x" $ pure "x"))
+               (pure "xev"))
+            (pure "r")
+        , forall_ ["r", "a"] $
+          tyConstraint (tyOffset (Label "id") (pure "r")) $
+          tyArr (tyRecord $ pure "r") $
+          tyRecord $
+          tyRowExtend (Label "id")
+            (tyArr (pure "a") (pure "a"))
+            (pure "r")
+        )
+
+    it "15) |- \\r -> *{ id = (\\x -> x) : forall a. a -> a | r } : forall r. (id | r) => Record r -> Record (id : forall a. a -> a | r)" $ do
+      let
+        tyCtorCtx _ = Nothing
+
+        tyVarCtx :: String -> Maybe (Kind Void)
+        tyVarCtx = const Nothing
+
+        varCtx :: String -> Either String (Ty tyVar)
+        varCtx x = Left x
+
+      let
+        ty =
+          forall_ ["r"] $
+          tyConstraint (tyOffset (Label "id") (pure "r")) $
+          tyArr (tyRecord $ pure "r") $
+          tyRecord $
+          tyRowExtend (Label "id")
+            (forall_ ["a"] $ tyArr (pure "a") (pure "a"))
+            (pure "r")
+
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        TmAnn
+          (lam "r" $
+           tmExtend
+             (Label "id")
+             (lam "x" (pure "x") `TmAnn`
+              forall_ ["a"] (tyArr (pure "a") (pure "a")))
+             (pure "r"))
+          ty
+
+      res `shouldBe`
+        Right
+        ( lam "xev" $
+          lam "r" $
+          TmApp
+            (TmApp
+               (lam "xev1" $
+                TmApp
+                  (TmApp (TmExtend (Label "id")) (pure "xev1"))
+                  (lam "x" (pure "x") `TmAnn`
+                   TyForall 1 (toScope $ tyArr (pure $ B 0) (pure $ B 0))))
+               (pure "xev"))
+            (pure "r")
+        , ty
+        )
+
+    it "16) *{ id = \\x -> x } : Record (id : forall a. a -> a)" $ do
+      let
+        tyCtorCtx _ = Nothing
+
+        tyVarCtx :: String -> Maybe (Kind Void)
+        tyVarCtx = const Nothing
+
+        varCtx :: String -> Either String (Ty tyVar)
+        varCtx x = Left x
+
+      let
+        ty =
+          tyRecord $
+          tyRowExtend (Label "id")
+            (forall_ ["a"] $ tyArr (pure "a") (pure "a"))
+            TyRowEmpty
+
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        TmAnn
+          (TmRecord [(Label "id", lam "x" $ pure "x")])
+          ty
+
+      res `shouldBe`
+        Right
+        ( TmRecord [(Label "id", lam "x" $ pure "x")]
+        , ty
+        )
+
+    it "16) (\\x -> x) : forall a. a -> a" $ do
+      let
+        tyCtorCtx _ = Nothing
+
+        tyVarCtx :: String -> Maybe (Kind Void)
+        tyVarCtx = const Nothing
+
+        varCtx :: String -> Either String (Ty tyVar)
+        varCtx x = Left x
+
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        (lam "x" (pure "x") `TmAnn`
+         forall_ ["a"] (tyArr (pure "a") (pure "a")))
+
+      res `shouldBe`
+        Right
+        ( lam "x" (pure "x")
+        , TyForall 1 (toScope $ tyArr (pure $ B 0) (pure $ B 0))
         )

@@ -52,6 +52,11 @@ updateEvidence ph' evTm evTy = inferEvidence %= go
            then EvEntry ph evTm evTy <| ees
            else ee <| go ees
 
+localEvidence :: MonadState (InferState meta tyVar tmVar) m => m a -> m a
+localEvidence m = do
+  evs <- use inferEvidence
+  m <* (inferEvidence .= evs)
+
 lookupEvidence ::
   MonadState (InferState meta tyVar tmVar) m =>
   Placeholder ->

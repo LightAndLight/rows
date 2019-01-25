@@ -79,13 +79,14 @@ entails tys ty =
 -- @p : A ||- p : A@
 constructEvidence ::
   (Ord tyVar, Show tyVar) =>
-  MetaT 'Check Int Ty tyVar ->
+  Bool -> -- ^ Can we introduce new constraints?
+  MetaT 'Check Int Ty tyVar -> -- ^ Type for which we construct evidence
   TypeM s tyVar tmVar (Bool, EvT (Tm (Meta 'Check Int tyVar)) tmVar)
-constructEvidence evTy =
+constructEvidence canIntro evTy =
   case unMetaT evTy of
     TyApp TyOffset{} TyRowEmpty -> pure (False, EvT $ TmInt 0)
     TyApp (TyOffset l) (TyApp (TyApp (TyRowExtend l') _) rest) -> do
-      (more, evTm) <- constructEvidence $ MetaT (tyOffset l rest)
+      (more, evTm) <- constructEvidence canIntro $ MetaT (tyOffset l rest)
       pure $
         if l < l'
         then (more, evTm)
@@ -95,7 +96,18 @@ constructEvidence evTy =
         findM (\(EvEntry _ _ evTy') -> matchHead evTy evTy') =<<
         use inferEvidence
       case mFound of
-        Nothing -> (,) True . EvT . TmVar <$> newPlaceholder evTy
+        Nothing ->
+          if canIntro
+          then (,) True . EvT . TmVar <$> newPlaceholder evTy
+          else do
+            dTy <- displayType evTy
+            dTys <-
+              foldr
+                (\(EvEntry _ _ evTy') rest ->
+                   (:) <$> displayType evTy' <*> rest)
+                (pure []) =<<
+              use inferEvidence
+            throwError $ TypeCannotDeduce dTy dTys
         Just (EvEntry _ evTm _) -> pure (False, evTm)
 
 substM :: (Monad f, Monad m, Traversable m) => (a -> f (m b)) -> m a -> f (m b)
@@ -115,7 +127,7 @@ solvePlaceholders ctx = _Wrapped (substM go)
       EvEntry _ _ evTy <- lookupEvidence ph
 
       evTy' <- findType evTy
-      (more, evTm') <- constructEvidence evTy'
+      (more, evTm') <- constructEvidence True evTy'
       updateEvidence ph evTm' evTy'
 
       let evTm'' = ctx <$> evTm'
@@ -127,7 +139,10 @@ abstractEvidence ::
   forall tyVar x s tmVar.
   (Show tyVar, Ord tyVar) =>
   EvT (Tm (Meta 'Check Int tyVar)) x ->
-  TypeM s tyVar tmVar (EvT (Tm (Meta 'Check Int tyVar)) x, [MetaT 'Check Int Ty tyVar])
+  TypeM s tyVar tmVar
+    ( EvT (Tm (Meta 'Check Int tyVar)) x
+    , [MetaT 'Check Int Ty tyVar]
+    )
 abstractEvidence (EvT tm) = do
   (placeholders, vars) <- listify tm
 

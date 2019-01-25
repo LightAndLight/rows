@@ -166,6 +166,7 @@ ordNub set (x:xs) =
   else ordNub set xs
 
 forall_ :: Ord a => [a] -> Ty a -> Ty a
+forall_ [] ty = ty
 forall_ as ty =
   TyForall (Set.size asSet) $
   abstract (`elemIndex` ordNub asSet as) ty
@@ -173,6 +174,7 @@ forall_ as ty =
     asSet = Set.fromList as
 
 exists_ :: Ord a => [a] -> Ty a -> Ty a
+exists_ [] ty = ty
 exists_ as ty =
   TyExists (Set.size asSet) $
   abstract (`elemIndex` ordNub asSet as) ty

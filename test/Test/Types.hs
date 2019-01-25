@@ -43,11 +43,11 @@ runInferType supply a b c tm =
 runInstanceOf ::
   MonadIO m =>
   Supply ->
-  InferState Int Text Int ->
+  InferState Int Text Text ->
   (String -> Maybe (Kind Void)) ->
   Ty (Meta 'Check Int Text) ->
   Ty (Meta 'Check Int Text) ->
-  m (Either (TypeError Int Text ()) ())
+  m (Either (TypeError Int Text Text) ())
 runInstanceOf supply is ctx a b =
   liftIO $
   runTypeM is $
@@ -57,18 +57,18 @@ runInstanceOf supply is ctx a b =
 runGeneralize ::
   MonadIO m =>
   Supply ->
-  Tm (Meta 'Check Int Text) (Ev Int Text) ->
+  Tm (Meta 'Check Int Text) (Ev Text) ->
   Ty (Meta 'Check Int Text) ->
   m (Either
-       (TypeError Int Text ())
-       (Tm (DisplayMeta Int Text) Text, Ty (DisplayMeta Int Text)))
+       (TypeError Int Text Text)
+       (Tm (DisplayMeta Int Text) (Ev Text), Ty (DisplayMeta Int Text)))
 runGeneralize supply a b =
   runExceptT $ do
-    (res1, res2) <-
+    (EvT res1, MetaT res2) <-
       ExceptT $
       liftIO $
       runTypeM is $
-      generalize a (MetaT b)
+      generalize id (EvT a) (MetaT b)
     res1' <- bitraverse (liftIO . displayMeta) pure res1
     res2' <- traverse (liftIO . displayMeta) res2
     pure (res1', res2')
@@ -109,7 +109,7 @@ notInstanceOf ::
   Supply ->
   Ty (Meta 'Check Int Text) ->
   Ty (Meta 'Check Int Text) ->
-  TypeError Int Text () ->
+  TypeError Int Text Text ->
   Spec
 notInstanceOf text supply t1 t2 err =
   it text $ do
@@ -142,7 +142,7 @@ typesSpec supply =
 
         res `shouldBe`
           Right
-          ( lam "x" $ pure "x"
+          ( lam (V "x") $ pure (V "x")
           , forall_ [_N # "a"] $ tyArr (_N # "a") (_N # "a")
           )
       it "generalize(0, x(inf) -> x(inf)) ~> forall a. a -> a" $ do
@@ -156,7 +156,7 @@ typesSpec supply =
 
         res `shouldBe`
           Right
-          ( lam "x" $ pure "x"
+          ( lam (V "x") $ pure (V "x")
           , forall_ [_N # "a"] $
             tyArr (_N # "a") (_N # "a")
           )

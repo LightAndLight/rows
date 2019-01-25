@@ -22,7 +22,7 @@ rewriteRow
   -> Ty (Meta 'Check Int tyVar) -- ^ row tail
   -> Label -- ^ desired label
   -> Ty (Meta 'Check Int tyVar) -- ^ term to rewrite
-  -> TypeM s tyVar tmVar ev (Maybe (Label, Ty (Meta 'Check Int tyVar), Ty (Meta 'Check Int tyVar)))
+  -> TypeM s tyVar tmVar (Maybe (Label, Ty (Meta 'Check Int tyVar), Ty (Meta 'Check Int tyVar)))
 rewriteRow tyCtorCtx rt ll ty =
   case ty of
     TyApp (TyApp (TyRowExtend l) t) r ->

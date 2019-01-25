@@ -30,42 +30,42 @@ import Kind
 import Meta
 import Ty
 
-newtype TypeM s tyVar tmVar ev a
+newtype TypeM s tyVar tmVar a
   = TypeM
   { unTypeM ::
       StateT
-        (InferState Int tyVar ev)
+        (InferState Int tyVar tmVar)
         (EquivT s (MetaT 'Check Int Ty tyVar) (MetaT 'Check Int Ty tyVar)
            (ExceptT (TypeError Int tyVar tmVar) IO))
         a
   } deriving
   ( Functor, Applicative, Monad
-  , MonadState (InferState Int tyVar ev)
+  , MonadState (InferState Int tyVar tmVar)
   , MonadError (TypeError Int tyVar tmVar)
   )
 
 displayType
   :: Traversable b
   => MetaT 'Check a b c
-  -> TypeM s tyVar tmVar ev (DisplayMetaT a b c)
+  -> TypeM s tyVar tmVar (DisplayMetaT a b c)
 displayType = TypeM . lift . lift . lift . displayMetaT
 
 displayTypeM
   :: Meta 'Check a b
-  -> TypeM s tyVar tmVar ev (DisplayMeta a b)
+  -> TypeM s tyVar tmVar (DisplayMeta a b)
 displayTypeM = TypeM . lift . lift . lift . displayMeta
 
 showMetaT
   :: (Show a, forall x. Show x => Show (b x), Show c, Traversable b)
   => MetaT 'Check a b c
-  -> TypeM s tyVar tmVar ev String
+  -> TypeM s tyVar tmVar String
 showMetaT = fmap show . displayType
 
 eqMetaT
   :: (Eq a, forall x. Eq x => Eq (b x), Eq c, Traversable b)
   => MetaT 'Check a b c
   -> MetaT 'Check a b c
-  -> TypeM s tyVar tmVar ev Bool
+  -> TypeM s tyVar tmVar Bool
 eqMetaT ma mb = (==) <$> displayType ma <*> displayType mb
 
 combineType
@@ -92,16 +92,16 @@ combineType (MetaT x) (MetaT y) = MetaT $ go x y
     go _ _ = undefined
 
 runTypeM
-  :: forall tyVar tmVar ev a.
+  :: forall tyVar tmVar a.
   (Show tyVar, Ord tyVar) =>
-  InferState Int tyVar ev ->
-  (forall s. TypeM s tyVar tmVar ev a) ->
+  InferState Int tyVar tmVar ->
+  (forall s. TypeM s tyVar tmVar a) ->
   IO (Either (TypeError Int tyVar tmVar) a)
 runTypeM is ma = runExceptT (runEquivT id combineType (go ma))
   where
     go ::
       forall s.
-      TypeM s tyVar tmVar ev a ->
+      TypeM s tyVar tmVar a ->
       EquivT s
         (MetaT 'Check Int Ty tyVar)
         (MetaT 'Check Int Ty tyVar)
@@ -112,7 +112,7 @@ equateType ::
   Ord tyVar =>
   MetaT 'Check Int Ty tyVar ->
   MetaT 'Check Int Ty tyVar ->
-  TypeM s tyVar tmVar ev ()
+  TypeM s tyVar tmVar ()
 equateType a b = go (unMetaT a) (unMetaT b)
   where
     -- when combining metas, we take the shallowest one, because we always
@@ -153,12 +153,12 @@ equateType a b = go (unMetaT a) (unMetaT b)
 findType ::
   Ord tyVar =>
   MetaT 'Check Int Ty tyVar ->
-  TypeM s tyVar tmVar ev (MetaT 'Check Int Ty tyVar)
+  TypeM s tyVar tmVar (MetaT 'Check Int Ty tyVar)
 findType = TypeM . _Wrapped go
   where
     go = plate go <=< _Unwrapped (lift . classDesc)
 
-newSkolem :: Kind Int -> TypeM s tyVar tmVar ev (Meta 'Check Int b)
+newSkolem :: Kind Int -> TypeM s tyVar tmVar (Meta 'Check Int b)
 newSkolem kind = do
   (v, supply') <- uses inferSupply freshId
   inferSupply .= supply'
@@ -177,7 +177,7 @@ newSkolem kind = do
 newMeta
   :: Rank
   -> Kind Int
-  -> TypeM s tyVar tmVar ev (Meta 'Check Int b)
+  -> TypeM s tyVar tmVar (Meta 'Check Int b)
 newMeta r kind = do
   (v, supply') <- uses inferSupply freshId
   inferSupply .= supply'
@@ -194,20 +194,20 @@ newMeta r kind = do
   rank <- TypeM . lift . lift . lift $ newIORef r
   pure $ M depth rank v
 
-newMetaInf :: Kind Int -> TypeM s tyVar tmVar ev (Meta 'Check Int b)
+newMetaInf :: Kind Int -> TypeM s tyVar tmVar (Meta 'Check Int b)
 newMetaInf = newMeta Inf
 
-newMetaRank :: Kind Int -> TypeM s tyVar tmVar ev (Meta 'Check Int b)
+newMetaRank :: Kind Int -> TypeM s tyVar tmVar (Meta 'Check Int b)
 newMetaRank kind = flip newMeta kind . Rank =<< use inferRank
 
-metaRank :: Meta 'Check a b -> TypeM s tyVar tmVar ev (Maybe Rank)
+metaRank :: Meta 'Check a b -> TypeM s tyVar tmVar (Maybe Rank)
 metaRank (M _ r _) = TypeM . lift . lift . lift $ Just <$> readIORef r
 metaRank _ = pure Nothing
 
-skolemDepth :: Meta 'Check a b -> TypeM s tyVar tmVar ev (Maybe Int)
+skolemDepth :: Meta 'Check a b -> TypeM s tyVar tmVar (Maybe Int)
 skolemDepth (S d _) = TypeM . lift . lift . lift $ Just <$> readIORef d
 skolemDepth _ = pure Nothing
 
-metaDepth :: Meta 'Check a b -> TypeM s tyVar tmVar ev (Maybe Int)
+metaDepth :: Meta 'Check a b -> TypeM s tyVar tmVar (Maybe Int)
 metaDepth (M d _ _) = TypeM . lift . lift . lift $ Just <$> readIORef d
 metaDepth _ = pure Nothing

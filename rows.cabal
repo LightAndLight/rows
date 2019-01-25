@@ -70,6 +70,7 @@ test-suite rows-tests
                      , hedgehog
                      , hspec
                      , hw-hspec-hedgehog
+                     , lens
                      , megaparsec
                      , mtl
                      , plated1

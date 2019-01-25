@@ -6,9 +6,12 @@
 {-# language TemplateHaskell #-}
 module Tm where
 
-import Bound.Scope (Scope, abstract1, hoistScope, toScope, fromScope)
+import Bound.Scope
+  (Scope, abstract1, hoistScope, toScope, fromScope, bitraverseScope)
 import Bound.TH (makeBound)
 import Data.Bifunctor (Bifunctor(..))
+import Data.Bifoldable (Bifoldable(..))
+import Data.Bitraversable (Bitraversable(..), bifoldMapDefault)
 import Data.Deriving (deriveEq1, deriveShow1)
 import Data.Functor.Const (Const(..))
 import Data.Generics.Plated1 (Plated1(..))
@@ -124,6 +127,26 @@ instance Bifunctor Tm where
       TmInject l -> TmInject l
       TmEmbed l -> TmEmbed l
       TmInt n -> TmInt n
+
+instance Bifoldable Tm where
+  bifoldMap = bifoldMapDefault
+
+instance Bitraversable Tm where
+  bitraverse f g tm =
+    case tm of
+      TmAnn a b -> TmAnn <$> bitraverse f g a <*> traverse f b
+      TmVar a -> TmVar <$> g a
+      TmApp a b -> TmApp <$> bitraverse f g a <*> bitraverse f g b
+      TmAdd a b -> TmAdd <$> bitraverse f g a <*> bitraverse f g b
+      TmLam s -> TmLam <$> bitraverseScope f g s
+      TmRecord a -> TmRecord <$> traverse (traverse (bitraverse f g)) a
+      TmExtend l -> pure $ TmExtend l
+      TmSelect l -> pure $ TmSelect l
+      TmRestrict l -> pure $ TmRestrict l
+      TmMatch l -> pure $ TmMatch l
+      TmInject l -> pure $ TmInject l
+      TmEmbed l -> pure $ TmEmbed l
+      TmInt n -> pure $ TmInt n
 
 instance Plated1 (Tm tyVar) where
   plate1 f = go

@@ -1,13 +1,10 @@
 {-# language BangPatterns #-}
 {-# language DataKinds #-}
 {-# language FlexibleContexts #-}
-{-# language FlexibleInstances, FunctionalDependencies, MultiParamTypeClasses #-}
-{-# language GeneralizedNewtypeDeriving #-}
+{-# language FlexibleInstances, MultiParamTypeClasses #-}
 {-# language LambdaCase #-}
 {-# language OverloadedLists #-}
 {-# language ScopedTypeVariables #-}
-{-# language StandaloneDeriving #-}
-{-# language TemplateHaskell #-}
 {-# language RankNTypes #-}
 module Inference.Type where
 
@@ -23,6 +20,7 @@ import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Writer.Strict (runWriterT)
 import Data.Bifunctor (first)
+import Data.Bitraversable (bitraverse)
 import Data.Coerce (coerce)
 import Data.Foldable (toList, traverse_)
 import Data.Maybe (fromJust)
@@ -128,12 +126,12 @@ unifyType tyCtorCtx x y = do
   xKind <-
     inferKindM
       (fmap (fmap absurd) . tyCtorCtx)
-      (\v -> maybe (Left v) Right $ tyVarCtx v)
+      (\v -> maybe (Left <$> displayTypeM v) (pure . Right) $ tyVarCtx v)
       x'
   yKind <-
     inferKindM
       (fmap (fmap absurd) . tyCtorCtx)
-      (\v -> maybe (Left v) Right $ tyVarCtx v)
+      (\v -> maybe (Left <$> displayTypeM v) (pure . Right) $ tyVarCtx v)
       y'
   unifyKind xKind yKind
   go x' y'
@@ -171,7 +169,10 @@ unifyType tyCtorCtx x y = do
         Just (_, t', r') ->
           unifyType tyCtorCtx (MetaT t) (MetaT t') *>
           unifyType tyCtorCtx (MetaT r) (MetaT r')
-        Nothing -> throwError $ TypeMismatch (MetaT ty) (MetaT s)
+        Nothing -> do
+          dTy <- lift . displayType $ MetaT ty
+          dS <- lift . displayType $ MetaT s
+          throwError $ TypeMismatch dTy dS
     go s t@(TyApp (TyApp TyRowExtend{} _) _) = go t s
     go (TyCtor s) (TyCtor s') | s == s' = pure ()
     go (TyVar (N a)) (TyVar (N b)) | a == b = pure ()
@@ -183,14 +184,21 @@ unifyType tyCtorCtx x y = do
     go ty'@(TyVar v@(M _ _ a)) ty = do
       d <- lift $ fromJust <$> metaDepth v
       if occursType a $ MetaT ty
-      then throwError $ TypeOccurs a (MetaT ty)
+      then do
+        dTy <- lift . displayType $ MetaT ty
+        throwError $ TypeOccurs a dTy
       else do
         escs <- lift $ escapesType d ty
         case escs of
           [] -> lift $ equateType (MetaT ty') (MetaT ty)
-          metas -> throwError $ TypeEscaped metas
+          metas -> do
+            dMetas <- lift $ traverse (displayType . MetaT . TyVar) metas
+            throwError $ TypeEscaped dMetas
     go ty ty'@(TyVar M{}) = go ty' ty
-    go l m = throwError $ TypeMismatch (MetaT l) (MetaT m)
+    go l m = do
+      dL <- lift . displayType $ MetaT l
+      dM <- lift . displayType $ MetaT m
+      throwError $ TypeMismatch dL dM
 
 generalize
   :: (Ord tyVar, Show tyVar, Show tmVar, Show x)
@@ -248,16 +256,16 @@ closeType ::
   EvT Int (Tm (Meta 'Check Int tyVar)) x ->
   MetaT 'Check Int Ty tyVar ->
   TypeM s tyVar tmVar Int (Tm Void x, Ty tyVar)
-closeType (EvT tm) (MetaT ty) = do
+closeType (EvT tm) (MetaT ty) =
   case traverse (\case; N a -> Just a; _ -> Nothing) ty of
     Nothing -> do
       ty' <- showMetaT (MetaT ty)
       error $ "closeType: unsolved metas:\n\n" <> ty'
     Just ty' ->
       case traverse (\case; V a -> Just a; _ -> Nothing) tm of
-        Nothing ->
-          error $
-          "closeType: unsolved evidence:\n\n" -- <> show tm
+        Nothing -> do
+          dTm <- bitraverse displayTypeM pure tm
+          error $ "closeType: unsolved evidence:\n\n" <> show dTm
         Just tm' -> pure (stripAnnots tm', ty')
 
 applyEvidence
@@ -371,8 +379,9 @@ inferTypeM ctx tyCtorCtx varCtx tm =
       (_, EvT bodyTm', MetaT bodyTy') <- instantiate bodyTm bodyTy
 
       MetaT argTy' <- lift . findType $ MetaT (TyVar argTy)
-      unless (isMonotype argTy') .
-        throwError $ TypePolymorphicArg (MetaT argTy')
+      unless (isMonotype argTy') $ do
+        dArgTy <- lift . displayType $ MetaT argTy'
+        throwError $ TypePolymorphicArg dArgTy
 
       p <- lift . findType $ MetaT $ tyArr argTy' bodyTy'
 
@@ -382,7 +391,7 @@ inferTypeM ctx tyCtorCtx varCtx tm =
         ( lift tm''
         , MetaT ty'
         )
-    TmSelect l -> do
+    TmSelect l ->
       pure
         ( tm
         , MetaT $
@@ -391,7 +400,7 @@ inferTypeM ctx tyCtorCtx varCtx tm =
           tyArr (tyRecord $ tyRowExtend l (pure $ B 1) (pure $ B 0)) $
           pure (B 1)
         )
-    TmRestrict l -> do
+    TmRestrict l ->
       pure
         ( tm
         , MetaT $
@@ -400,7 +409,7 @@ inferTypeM ctx tyCtorCtx varCtx tm =
           tyArr (tyRecord $ tyRowExtend l (pure $ B 1) (pure $ B 0)) $
           tyRecord (pure $ B 0)
         )
-    TmExtend l -> do
+    TmExtend l ->
       pure
         ( tm
         , MetaT $
@@ -410,7 +419,7 @@ inferTypeM ctx tyCtorCtx varCtx tm =
           tyArr (tyRecord (pure $ B 0)) $
           tyRecord (tyRowExtend l (pure $ B 1) (pure $ B 0))
         )
-    TmMatch l -> do
+    TmMatch l ->
       pure
         ( tm
         , MetaT $
@@ -421,7 +430,7 @@ inferTypeM ctx tyCtorCtx varCtx tm =
           tyArr (tyArr (tyVariant (pure $ B 0)) (pure $ B 2)) $
           pure (B 2)
         )
-    TmInject l -> do
+    TmInject l ->
       pure
         ( tm
         , MetaT $
@@ -430,7 +439,7 @@ inferTypeM ctx tyCtorCtx varCtx tm =
           tyArr (pure $ B 1) $
           tyVariant (tyRowExtend l (pure $ B 1) (pure $ B 0))
         )
-    TmEmbed l -> do
+    TmEmbed l ->
       pure
         ( tm
         , MetaT $

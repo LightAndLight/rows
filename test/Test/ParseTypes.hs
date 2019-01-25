@@ -4,6 +4,7 @@
 module Test.ParseTypes where
 
 import Control.Concurrent.Supply (Supply)
+import Control.Monad.IO.Class (liftIO)
 import Data.Text (Text)
 import Data.Void (Void)
 import Text.Megaparsec (parse, eof)
@@ -31,8 +32,9 @@ parseAndCheckTm a b c d str =
   it str $
     case parse @Void (parseTm <* eof) "test" (Text.pack str) of
       Left err -> error $ show err
-      Right tm ->
-        case runInferType a b c d $ desugar tm of
+      Right tm -> do
+        res <- liftIO $ runInferType a b c d (desugar tm)
+        case res of
           Left err' -> error $ show err'
           Right{} -> pure () :: Expectation
 

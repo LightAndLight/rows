@@ -1,3 +1,4 @@
+{-# language DataKinds #-}
 {-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
 module Test.Types where
@@ -5,9 +6,11 @@ module Test.Types where
 import Bound.Scope (toScope)
 import Bound.Var (Var(..))
 import Control.Concurrent.Supply (Supply)
-import Control.Monad.Except (runExcept)
-import Control.Monad.IO.Class (liftIO)
+import Control.Lens.Review ((#))
+import Control.Monad.Except (ExceptT(..), runExceptT)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Class (lift)
+import Data.Bitraversable (bitraverse)
 import Data.IORef (newIORef)
 import Data.Text (Text)
 import Data.Void (Void)
@@ -27,37 +30,48 @@ import Ty
 import Test.Hspec
 
 runInferType
-  :: (Ord b, Show b, Show c)
+  :: (Ord b, Show b, Show c, MonadIO m)
   => Supply
   -> (String -> Maybe (Kind Void)) -- ^ Type constructors
   -> (b -> Maybe (Kind Void)) -- ^ Type variables
   -> (c -> Either c (Ty b)) -- ^ Term variables
   -> Tm b c
-  -> Either (TypeError Int b c) (Tm Void c, Ty b)
+  -> m (Either (TypeError Int b c) (Tm Void c, Ty b))
 runInferType supply a b c tm =
-  runExcept $ inferType supply a b c tm
+  runExceptT $ inferType supply a b c tm
 
 runInstanceOf ::
+  MonadIO m =>
   Supply ->
   InferState Int Text Int ->
   (String -> Maybe (Kind Void)) ->
-  Ty (Meta Int Text) ->
-  Ty (Meta Int Text) ->
-  Either (TypeError Int Text ()) ()
+  Ty (Meta 'Check Int Text) ->
+  Ty (Meta 'Check Int Text) ->
+  m (Either (TypeError Int Text ()) ())
 runInstanceOf supply is ctx a b =
-  runExcept $
+  liftIO $
+  runTypeM is $
   runKindM supply $
-  runTypeM is (instanceOf ctx a b)
+  instanceOf ctx a b
 
 runGeneralize ::
+  MonadIO m =>
   Supply ->
-  Tm (Meta Int Text) (Ev Int Text) ->
-  Ty (Meta Int Text) ->
-  Either (TypeError Int Text ()) (Tm (Meta Int Text) Text, Ty (Meta Int Text))
+  Tm (Meta 'Check Int Text) (Ev Int Text) ->
+  Ty (Meta 'Check Int Text) ->
+  m (Either
+       (TypeError Int Text ())
+       (Tm (DisplayMeta Int Text) Text, Ty (DisplayMeta Int Text)))
 runGeneralize supply a b =
-  runExcept $
-  runKindM supply $
-  runTypeM is (generalize a $ MetaT b)
+  runExceptT $ do
+    (res1, res2) <-
+      ExceptT $
+      liftIO $
+      runTypeM is $
+      generalize a (MetaT b)
+    res1' <- bitraverse (liftIO . displayMeta) pure res1
+    res2' <- traverse (liftIO . displayMeta) res2
+    pure (res1', res2')
   where
     is =
       InferState
@@ -71,8 +85,8 @@ runGeneralize supply a b =
 isInstanceOf ::
   String ->
   Supply ->
-  Ty (Meta Int Text) ->
-  Ty (Meta Int Text) ->
+  Ty (Meta 'Check Int Text) ->
+  Ty (Meta 'Check Int Text) ->
   Spec
 isInstanceOf text supply t1 t2 =
   it text $ do
@@ -87,13 +101,14 @@ isInstanceOf text supply t1 t2 =
         }
       ctx = const Nothing
 
-    runInstanceOf supply iState ctx t1 t2 `shouldBe` Right ()
+    res <- runInstanceOf supply iState ctx t1 t2
+    res `shouldBe` Right ()
 
 notInstanceOf ::
   String ->
   Supply ->
-  Ty (Meta Int Text) ->
-  Ty (Meta Int Text) ->
+  Ty (Meta 'Check Int Text) ->
+  Ty (Meta 'Check Int Text) ->
   TypeError Int Text () ->
   Spec
 notInstanceOf text supply t1 t2 err =
@@ -109,32 +124,42 @@ notInstanceOf text supply t1 t2 err =
         }
       ctx = const Nothing
 
-    runInstanceOf supply iState ctx t1 t2 `shouldBe` Left err
+    res <- runInstanceOf supply iState ctx t1 t2
+    res `shouldBe` Left err
 
 typesSpec :: Supply -> Spec
 typesSpec supply =
   describe "Types" $ do
     describe "Generalization" $ do
-      it "generalize(0, x(1) -> x(1)) ~> forall a. a -> a" $
+      it "generalize(0, x(1) -> x(1)) ~> forall a. a -> a" $ do
+        d0 <- liftIO $ newIORef 0
+        r1 <- liftIO $ newIORef (Rank 1)
+        res <-
+          runGeneralize
+            supply
+            (lam (V "x") $ pure (V "x"))
+            (tyArr (pure $ M d0 r1 0) (pure $ M d0 r1 0))
 
-        runGeneralize
-        supply
-          (lam (V "x") $ pure (V "x"))
-          (tyArr (pure $ M 0 (Rank 1) 0) (pure $ M 0 (Rank 1) 0))
+        res `shouldBe`
+          Right
+          ( lam "x" $ pure "x"
+          , forall_ [_N # "a"] $ tyArr (_N # "a") (_N # "a")
+          )
+      it "generalize(0, x(inf) -> x(inf)) ~> forall a. a -> a" $ do
+        d0 <- liftIO $ newIORef 0
+        inf <- liftIO $ newIORef Inf
+        res <-
+          runGeneralize
+            supply
+            (lam (V "x") $ pure (V "x"))
+            (tyArr (_M # (d0, inf, 0)) (_M # (d0, inf, 0)))
 
-        `shouldBe`
-
-        Right (lam "x" $ pure "x", forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "a"))
-      it "generalize(0, x(inf) -> x(inf)) ~> forall a. a -> a" $
-
-        runGeneralize
-        supply
-          (lam (V "x") $ pure (V "x"))
-          (tyArr (pure $ M 0 Inf 0) (pure $ M 0 Inf 0))
-
-        `shouldBe`
-
-        Right (lam "x" $ pure "x", forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "a"))
+        res `shouldBe`
+          Right
+          ( lam "x" $ pure "x"
+          , forall_ [_N # "a"] $
+            tyArr (_N # "a") (_N # "a")
+          )
 
     describe "Subsumption" $ do
       isInstanceOf
@@ -147,7 +172,7 @@ typesSpec supply =
         supply
         (forall_ [N "a"] (tyArr (pure $ N "a") (pure $ N "a")))
         (tyArr TyInt TyInt)
-        (TypeMismatch (MetaT $ TyVar $ S 1 0) (MetaT TyInt))
+        (TypeMismatch (liftDM $ S 1 0) (lift TyInt))
       isInstanceOf
         "3) |- forall b. (forall a. a -> b) -> (forall a. -> b) `instanceOf` forall a. a -> a"
         supply
@@ -164,23 +189,22 @@ typesSpec supply =
             , _inferEvidence = mempty
             , _inferKinds =
               \case
-                M 0 Inf 99 -> Just KindType
+                M _ _ 99 -> Just KindType
                 _ -> Nothing
             , _inferDepth = 0
             , _inferRank = 0
             }
           ctx = const Nothing
 
-        runInstanceOf
-          supply
-          iState
-          ctx
-          (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ M 0 Inf 99))
-          (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "a"))
+        inf <- liftIO $ newIORef Inf
+        d0 <- liftIO $ newIORef 0
 
-          `shouldBe`
+        res <-
+          runInstanceOf supply iState ctx
+            (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ M d0 inf 99))
+            (forall_ [N "a"] $ tyArr (pure $ N "a") (pure $ N "a"))
 
-          Left (TypeEscaped [S 1 0])
+        res `shouldBe` Left (TypeEscaped [liftDM $ S 1 0])
       isInstanceOf
         "5) |- forall a. (l | {}) => a `instanceOf` forall a. a"
         supply
@@ -200,15 +224,11 @@ typesSpec supply =
         varCtx :: String -> Either String (Ty tyVar)
         varCtx x = Left x
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (TmLam $ toScope $ TmVar (B ()))
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        TmLam (toScope $ TmVar (B ()))
 
-        `shouldBe`
-
+      res `shouldBe`
         Right
         ( lam "x" $ pure "x"
         , TyForall 1 $ toScope $
@@ -225,15 +245,11 @@ typesSpec supply =
         varCtx :: String -> Either String (Ty tyVar)
         varCtx x = Left x
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (TmLam $ toScope $ TmLam $ toScope $ TmVar (F (B ())))
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        TmLam (toScope (TmLam (toScope $ TmVar (F (B ())))))
 
-        `shouldBe`
-
+      res `shouldBe`
         Right
           ( lam "x" $ lam "y" $ pure "x"
           , TyForall 2 $ toScope $
@@ -252,16 +268,18 @@ typesSpec supply =
         varCtx :: String -> Either String (Ty tyVar)
         varCtx x = Left x
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (TmLam $ toScope $ TmApp (TmVar (B ())) (TmVar (B ())))
+      res <-
+        runInferType
+          supply
+          tyCtorCtx
+          tyVarCtx
+          varCtx
+          (TmLam $ toScope $ TmApp (TmVar (B ())) (TmVar (B ())))
 
-        `shouldBe`
-
-        Left (TypeOccurs 1 (MetaT $ TyApp (TyApp TyArr (TyVar (M 0 (Rank 2) 1))) (TyVar (M 0 (Rank 2) 2))))
+      res `shouldBe`
+        Left
+        (TypeOccurs 1 . DisplayMetaT $
+         tyArr (_M # (0, Rank 0, 1)) (_M # (0, Rank 0, 2)))
 
     it "4) f : X -> Y, x : Z |/- f x : Y" $ do
       let
@@ -282,15 +300,11 @@ typesSpec supply =
             "x" -> Right $ TyCtor "Z"
             _ -> Left x
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (TmApp (TmVar "f") (TmVar "x"))
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        TmApp (TmVar "f") (TmVar "x")
 
-        `shouldBe`
-
+      res `shouldBe`
         Left (TypeMismatch (lift $ TyCtor "X") (lift $ TyCtor "Z"))
 
     it "5) |- _.l : forall r a. (l | r) => Record (l : a | r) -> a" $ do
@@ -303,15 +317,9 @@ typesSpec supply =
         varCtx :: String -> Either String (Ty tyVar)
         varCtx x = Left x
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (TmSelect $ Label "l")
+      res <- runInferType supply tyCtorCtx tyVarCtx varCtx (TmSelect $ Label "l")
 
-        `shouldBe`
-
+      res `shouldBe`
         Right
           ( TmSelect (Label "l")
           , forall_ ["r", "a"] $
@@ -331,18 +339,14 @@ typesSpec supply =
         varCtx :: String -> Either String (Ty tyVar)
         varCtx x = Left x
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (lam "r" $
-          TmApp
-            (tmSelect (pure "r") (Label "f"))
-            (tmSelect (pure "r") (Label "x")))
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        lam "r"
+          (TmApp
+             (tmSelect (pure "r") (Label "f"))
+             (tmSelect (pure "r") (Label "x")))
 
-        `shouldBe`
-
+      res `shouldBe`
         Right
           ( lam "offset1" $ lam "offset2" $
             lam "r" $
@@ -384,15 +388,11 @@ typesSpec supply =
               TyRowEmpty
             _ -> Left x
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (tmSelect (pure "r") (Label "y"))
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        tmSelect (pure "r") (Label "y")
 
-        `shouldBe`
-
+      res `shouldBe`
         Right
         ( TmApp (TmApp (TmSelect $ Label "y") (TmAdd (TmInt 1) (TmInt 0))) (pure "r")
         , forall_ [] $ TyCtor "B"
@@ -424,15 +424,11 @@ typesSpec supply =
               tyRecord $ tyRowExtend (Label "y") (TyCtor "A") $ pure "r"
             _ -> Left x
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (TmApp (pure "x") (pure "y"))
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        TmApp (pure "x") (pure "y")
 
-        `shouldBe`
-
+      res `shouldBe`
         Left
         (TypeMismatch
             (lift $ tyRowExtend (Label "x") (TyCtor "A") $ pure "r")
@@ -471,15 +467,11 @@ typesSpec supply =
               pure "r"
             _ -> Left x
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (TmApp (pure "x") (pure "y"))
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        TmApp (pure "x") (pure "y")
 
-        `shouldBe`
-
+      res `shouldBe`
         Left
         (TypeMismatch
             (lift $ TyCtor "A")
@@ -507,15 +499,11 @@ typesSpec supply =
               TyRowEmpty
             _ -> Left x
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (tmSelect (pure "r") (Label "x"))
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        tmSelect (pure "r") (Label "x")
 
-        `shouldBe`
-
+      res `shouldBe`
         Right
         ( TmApp (TmApp (TmSelect $ Label "x") (TmInt 0)) (pure "r")
         , forall_ [] $ TyCtor "A"
@@ -531,22 +519,18 @@ typesSpec supply =
         varCtx :: String -> Either String (Ty tyVar)
         varCtx x = Left x
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (TmApp
-            (lam "r" $
-            TmApp
-              (tmSelect (pure "r") (Label "f"))
-              (tmSelect (pure "r") (Label "x")))
-            (tmExtend (Label "f") (lam "x" $ pure "x") $
-            tmExtend (Label "x") (TmInt 99) $
-            (TmRecord [])))
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        TmApp
+           (lam "r" $
+           TmApp
+             (tmSelect (pure "r") (Label "f"))
+             (tmSelect (pure "r") (Label "x")))
+           (tmExtend (Label "f") (lam "x" $ pure "x") $
+           tmExtend (Label "x") (TmInt 99) $
+           (TmRecord []))
 
-        `shouldBe`
-
+      res `shouldBe`
         Right
           ( TmApp
               (lam "r" $
@@ -575,15 +559,11 @@ typesSpec supply =
           tyRowExtend (Label "y") TyInt $
           TyRowEmpty
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (tmInject (Label "x") (TmInt 99) `TmAnn` ty)
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        tmInject (Label "x") (TmInt 99) `TmAnn` ty
 
-        `shouldBe`
-
+      res `shouldBe`
         Right
         ( TmApp (TmApp (TmInject $ Label "x") (TmInt 0)) (TmInt 99)
         , forall_ [] ty
@@ -605,15 +585,11 @@ typesSpec supply =
           tyRowExtend (Label "y") TyInt $
           TyRowEmpty
 
-      runInferType
-        supply
-        tyCtorCtx
-        tyVarCtx
-        varCtx
-        (tmInject (Label "y") (TmInt 99) `TmAnn` ty)
+      res <-
+        runInferType supply tyCtorCtx tyVarCtx varCtx $
+        tmInject (Label "y") (TmInt 99) `TmAnn` ty
 
-        `shouldBe`
-
+      res `shouldBe`
         Right
         ( TmApp (TmApp (TmInject $ Label "y") (TmAdd (TmInt 1) (TmInt 0))) (TmInt 99)
         , forall_ [] ty

@@ -1,14 +1,19 @@
 {-# language BangPatterns #-}
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable, DeriveGeneric #-}
 {-# language FlexibleContexts #-}
+{-# language FlexibleInstances, MultiParamTypeClasses #-}
+{-# language LambdaCase #-}
 {-# language StandaloneDeriving #-}
 {-# language TemplateHaskell #-}
+{-# language UndecidableInstances #-}
 module Ty where
 
 import Bound.Scope (Scope, abstract)
 import Bound.TH (makeBound)
 import Control.Lens.Fold (allOf)
 import Control.Lens.Plated (Plated(..), gplate)
+import Control.Lens.Prism (prism')
+import Control.Lens.Wrapped (_Wrapped)
 import Data.Deriving (deriveEq1, deriveOrd1, deriveShow1)
 import Data.List (elemIndex)
 import Data.Set (Set)
@@ -17,6 +22,7 @@ import GHC.Generics (Generic)
 import qualified Data.Set as Set
 
 import Label
+import Meta
 
 data Ty a
   -- | Arrow type
@@ -92,6 +98,12 @@ deriving instance Eq a => Eq (Ty a)
 deriving instance Show a => Show (Ty a)
 
 instance Plated (Ty a) where; plate = gplate
+
+instance AsMeta x s a b => AsMeta (Ty x) s a b where
+  _Meta = prism' pure (\case; TyVar a -> Just a; _ -> Nothing) . _Meta
+
+instance AsMeta (MetaT s a Ty b) s a b where
+  _Meta = _Wrapped._Meta
 
 isMonotype :: Ty a -> Bool
 isMonotype ty =

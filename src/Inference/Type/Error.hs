@@ -16,9 +16,9 @@ data TypeError a b c
   | TypeKindMismatch (DisplayMetaT a Ty b) (Kind Void) (DisplayMetaT a Ty b) (Kind Void)
   | TypeCannotDeduce (DisplayMetaT a Ty b) [DisplayMetaT a Ty b]
   | TypeKindError (KindError (DisplayMeta Int b))
-  | TypeEscaped [DisplayMeta a b]
+  | TypeEscaped [DisplayMetaT a Ty b]
   | TypePolymorphicArg (DisplayMetaT a Ty b)
-  deriving Eq
+  deriving (Eq, Show)
 makeClassyPrisms ''TypeError
 
 instance AsKindError (TypeError a b c) (DisplayMeta Int b) where

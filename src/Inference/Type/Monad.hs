@@ -50,6 +50,11 @@ displayType
   -> TypeM s tyVar tmVar ev (DisplayMetaT a b c)
 displayType = TypeM . lift . lift . lift . displayMetaT
 
+displayTypeM
+  :: Meta 'Check a b
+  -> TypeM s tyVar tmVar ev (DisplayMeta a b)
+displayTypeM = TypeM . lift . lift . lift . displayMeta
+
 showMetaT
   :: (Show a, forall x. Show x => Show (b x), Show c, Traversable b)
   => MetaT 'Check a b c

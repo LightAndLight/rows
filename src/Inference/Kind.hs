@@ -1,11 +1,9 @@
 {-# language FlexibleContexts #-}
-{-# language FlexibleInstances, FunctionalDependencies, MultiParamTypeClasses #-}
+{-# language FlexibleInstances, MultiParamTypeClasses #-}
 {-# language GeneralizedNewtypeDeriving #-}
-{-# language LambdaCase #-}
 {-# language RankNTypes #-}
 {-# language ScopedTypeVariables #-}
 {-# language StandaloneDeriving, UndecidableInstances #-}
-{-# language TemplateHaskell #-}
 {-# language TupleSections #-}
 module Inference.Kind where
 
@@ -113,7 +111,7 @@ inferKindM
      , MonadError e m
      )
   => (String -> Maybe (Kind Int))
-  -> (x -> Either a (Kind Int))
+  -> (x -> m (Either a (Kind Int)))
   -> Ty x
   -> KindM s m (Kind Int)
 inferKindM ctorCtx varCtx (TyForall n s) = do
@@ -121,7 +119,7 @@ inferKindM ctorCtx varCtx (TyForall n s) = do
   k <-
     inferKindM
       ctorCtx
-      (unvar (unsafeKindMap metas) varCtx)
+      (unvar (pure . unsafeKindMap metas) varCtx)
       (fromScope s)
   unifyKind k KindType
   pure KindType
@@ -130,7 +128,7 @@ inferKindM ctorCtx varCtx (TyExists n s) = do
   k <-
     inferKindM
       ctorCtx
-      (unvar (unsafeKindMap metas) varCtx)
+      (unvar (pure . unsafeKindMap metas) varCtx)
       (fromScope s)
   unifyKind k KindType
   pure KindType
@@ -140,7 +138,8 @@ inferKindM _ _ TyConstraint =
 inferKindM ctorCtx _ (TyCtor s) =
   maybe (throwError $ _KindCtorNotFound # s) pure $ ctorCtx s
 inferKindM _ varCtx (TyVar x) =
-  either (throwError . (_KindVarNotFound #)) pure $ varCtx x
+  lift (varCtx x) >>=
+  either (throwError . (_KindVarNotFound #)) pure
 inferKindM ctorCtx varCtx (TyApp x y) = do
   xKind <- inferKindM ctorCtx varCtx x
   yKind <- inferKindM ctorCtx varCtx y
@@ -161,18 +160,19 @@ inferKindM _ _ TyInt{} =
   pure KindType
 
 inferDataDeclKind
-  :: forall e a m
+  :: forall x e a m
    . ( AsKindError e a
      , MonadError e m
-     , Eq a
+     , Eq x
      )
   => Supply -- ^ Variable supply
+  -> (x -> m a) -- ^ Freeze variables
   -> (String -> Maybe (Kind Void)) -- ^ Constructors
-  -> (a -> Maybe (Kind Void)) -- ^ Variables
-  -> (String, [a]) -- ^ Type constructor and arguments
-  -> [[Ty a]] -- ^ Fields for each data constructor
+  -> (x -> Maybe (Kind Void)) -- ^ Variables
+  -> (String, [x]) -- ^ Type constructor and arguments
+  -> [[Ty x]] -- ^ Fields for each data constructor
   -> m (Kind Void)
-inferDataDeclKind supply ctorCtx varCtx (ctor, params) branches =
+inferDataDeclKind supply freezeVars ctorCtx varCtx (ctor, params) branches =
   runKindM supply go
   where
     go :: forall s. KindM s m (Kind Void)
@@ -192,26 +192,31 @@ inferDataDeclKind supply ctorCtx varCtx (ctor, params) branches =
 
       for_ branches $ \branch ->
         for_ branch $ \ty -> do
-          k <- inferKindM ctorCtx' (\x -> maybe (Left x) Right $ varCtx' x) ty
+          k <-
+            inferKindM
+              ctorCtx'
+              (\x -> maybe (Left <$> freezeVars x) (pure . Right) $ varCtx' x)
+              ty
           unifyKind k KindType
 
       zonkKinds ctorKind
 
 inferKind
-  :: forall e a m
+  :: forall x e a m
    . ( AsKindError e a
      , MonadError e m
      )
   => Supply -- ^ Variable supply
+  -> (x -> m a) -- ^ Freeze variables
   -> (String -> Maybe (Kind Void)) -- ^ Constructors
-  -> (a -> Maybe (Kind Void)) -- ^ Variables
-  -> Ty a
+  -> (x -> Maybe (Kind Void)) -- ^ Variables
+  -> Ty x
   -> m (Kind Void)
-inferKind supply a b ty =
+inferKind supply freezeVars a b ty =
   runKindM
     supply
     (zonkKinds =<<
      inferKindM
        (fmap (fmap absurd) . a)
-       (\x -> maybe (Left x) Right . fmap (fmap absurd) $ b x)
+       (\x -> maybe (Left <$> freezeVars x) (pure . Right) . fmap (fmap absurd) $ b x)
        ty)

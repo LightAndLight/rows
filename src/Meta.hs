@@ -2,12 +2,14 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 {-# language FlexibleContexts #-}
 {-# language FlexibleInstances, MultiParamTypeClasses, TypeFamilies #-}
+{-# language FunctionalDependencies #-}
 {-# language QuantifiedConstraints #-}
 {-# language StandaloneDeriving #-}
 {-# language TemplateHaskell #-}
 module Meta where
 
-import Control.Lens.TH (makeWrapped, makePrisms)
+import Control.Lens.TH (makeWrapped, makeClassyPrisms)
+import Control.Lens.Wrapped (_Wrapped)
 import Control.Monad.Trans.Class (MonadTrans(..))
 import Data.Deriving (deriveEq1, deriveOrd1)
 import Data.Functor.Classes (Eq1(..), Ord1(..), eq1, compare1)
@@ -34,12 +36,16 @@ data Meta (s :: MetaStage) a b
   -- | Type variable
   | N b
   deriving (Functor, Foldable, Traversable)
-makePrisms ''Meta
+makeClassyPrisms ''Meta
 
 deriving instance (Show a, Show b) => Show (Meta 'Display a b)
 
 newtype DisplayMeta a b = DisplayMeta (Meta 'Display a b)
   deriving Show
+makeWrapped ''DisplayMeta
+
+instance AsMeta (DisplayMeta a b) 'Display a b where
+  _Meta = _Wrapped
 
 instance (Eq a, Eq b) => Eq (DisplayMeta a b) where
   DisplayMeta a == DisplayMeta b =
@@ -48,6 +54,30 @@ instance (Eq a, Eq b) => Eq (DisplayMeta a b) where
       (S x y, S x' y') -> x == x' && y == y'
       (N x, N x') -> x == x'
       _ -> False
+
+instance (Ord a, Ord b) => Ord (DisplayMeta a b) where
+  DisplayMeta a `compare` DisplayMeta b =
+    case (a, b) of
+      (M x y z, M x' y' z') ->
+        case compare x x' of
+          EQ ->
+            case compare y y' of
+              EQ -> compare z z'
+              y'' -> y''
+          x'' -> x''
+      (M{}, S{}) -> LT
+      (M{}, N{}) -> LT
+
+      (S{}, M{}) -> GT
+      (S x y, S x' y') ->
+        case compare x x' of
+          EQ -> compare y y'
+          x'' -> x''
+      (S{}, N{}) -> LT
+
+      (N{}, M{}) -> GT
+      (N{}, S{}) -> GT
+      (N x, N x') -> compare x x'
 
 displayMeta :: Meta 'Check a b -> IO (DisplayMeta a b)
 displayMeta m =
@@ -161,3 +191,9 @@ instance Monad m => Monad (MetaT s b m) where
 
 instance MonadTrans (MetaT s b) where
   lift = MetaT . fmap N
+
+instance MonadTrans (DisplayMetaT b) where
+  lift = DisplayMetaT . fmap (DisplayMeta . N)
+
+liftDM :: Applicative m => Meta 'Display a b -> DisplayMetaT a m b
+liftDM = DisplayMetaT . pure . DisplayMeta

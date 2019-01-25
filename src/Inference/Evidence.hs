@@ -79,14 +79,13 @@ entails tys ty =
 -- @p : A ||- p : A@
 constructEvidence ::
   (Ord tyVar, Show tyVar) =>
-  (tmVar -> x) ->
   MetaT 'Check Int Ty tyVar ->
-  TypeM s tyVar tmVar (Bool, EvT (Tm (Meta 'Check Int tyVar)) x)
-constructEvidence ctx evTy =
+  TypeM s tyVar tmVar (Bool, EvT (Tm (Meta 'Check Int tyVar)) tmVar)
+constructEvidence evTy =
   case unMetaT evTy of
     TyApp TyOffset{} TyRowEmpty -> pure (False, EvT $ TmInt 0)
     TyApp (TyOffset l) (TyApp (TyApp (TyRowExtend l') _) rest) -> do
-      (more, evTm) <- constructEvidence ctx $ MetaT (tyOffset l rest)
+      (more, evTm) <- constructEvidence $ MetaT (tyOffset l rest)
       pure $
         if l < l'
         then (more, evTm)
@@ -97,7 +96,7 @@ constructEvidence ctx evTy =
         use inferEvidence
       case mFound of
         Nothing -> (,) True . EvT . TmVar <$> newPlaceholder evTy
-        Just (EvEntry _ evTm _) -> pure (False, ctx <$> evTm)
+        Just (EvEntry _ evTm _) -> pure (False, evTm)
 
 substM :: (Monad f, Monad m, Traversable m) => (a -> f (m b)) -> m a -> f (m b)
 substM f = fmap join . traverse f
@@ -114,22 +113,31 @@ solvePlaceholders ctx = _Wrapped (substM go)
     go (V v) = pure $ pure (V v)
     go (P ph) = do
       EvEntry _ _ evTy <- lookupEvidence ph
+
       evTy' <- findType evTy
-      (more, evTm') <- constructEvidence ctx evTy'
+      (more, evTm') <- constructEvidence evTy'
+      updateEvidence ph evTm' evTy'
+
+      let evTm'' = ctx <$> evTm'
       if more
-        then unEvT <$> solvePlaceholders ctx evTm'
-        else pure $ unEvT evTm'
+        then unEvT <$> solvePlaceholders ctx evTm''
+        else pure $ unEvT evTm''
 
 abstractEvidence ::
   forall tyVar x s tmVar.
+  (Show tyVar, Ord tyVar) =>
   EvT (Tm (Meta 'Check Int tyVar)) x ->
   TypeM s tyVar tmVar (EvT (Tm (Meta 'Check Int tyVar)) x, [MetaT 'Check Int Ty tyVar])
 abstractEvidence (EvT tm) = do
   (placeholders, vars) <- listify tm
+
   rank <- use inferRank
   constraints <- constraintsFor (Rank rank) placeholders vars
+
   (tm', constraints') <- abstractPlaceholders constraints tm
+
   pure (EvT tm', constraints')
+
   where
     listify ::
       Tm (Meta 'Check Int tyVar) (Ev x) ->
@@ -152,7 +160,8 @@ abstractEvidence (EvT tm) = do
       case ev of
         P ph | ph `Set.member` phs -> do
           EvEntry _ _ evTy <- lookupEvidence ph
-          defer <- anyA (fmap (maybe False (<= rank)) . metaRank) (unMetaT evTy)
+
+          defer <- anyA (fmap (maybe False (< rank)) . metaRank) (unMetaT evTy)
           if defer
             then constraintsFor rank (Set.delete ph phs) evs
             else ((ph, evTy) :) <$> constraintsFor rank (Set.delete ph phs) evs

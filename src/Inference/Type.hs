@@ -24,7 +24,8 @@ import Data.Maybe (fromJust)
 import Data.Traversable (for)
 import Data.Void (Void, absurd)
 
-import Data.List.Utils
+import Bound.Scope.Utils (applyVars)
+import Data.List.Utils (filterM)
 import Evidence
 import Inference.Evidence
 import Inference.Kind
@@ -135,13 +136,16 @@ unifyType tyCtorCtx x y = do
         tyCtorCtx
         (MetaT ty)
         (MetaT $ instantiateVars [] s)
-    go (TyForall n s) (TyForall n' s') | n == n' =
+    go (TyForall n s) (TyForall n' s') =
       deep $ do
-        skolems <- replicateM n $ lift . newSkolem =<< KindVar <$> newKindMeta
-        unifyType
-          tyCtorCtx
-          (MetaT $ instantiateVars skolems s)
-          (MetaT $ instantiateVars skolems s')
+        let n'' = min n n'
+        skolems <-
+          replicateM n'' $
+          lift . newSkolem =<< KindVar <$> newKindMeta
+
+        go
+          (TyForall (n - n'') $ applyVars n'' skolems s)
+          (TyForall (n' - n'') $ applyVars n'' skolems s')
     go (TyRowExtend l) (TyRowExtend l') | l == l' = pure ()
     go ty@(TyApp (TyApp (TyRowExtend l) t) r) s = do
       rewritten <- lift $ rewriteRow tyCtorCtx (rowTail r) l s
@@ -192,11 +196,13 @@ generalize ::
 generalize ctx tm ty = do
   tm' <- solvePlaceholders ctx tm
   (tm'', constraints) <- abstractEvidence tm'
+
   let ty' = foldr (tyConstraint . unMetaT) (unMetaT ty) constraints
+
   rank <- Rank <$> use inferRank
   vars <- filterM (fmap (maybe False (>= rank)) . metaRank) ty'
-  let ty'' = forall_ vars ty'
-  pure (tm'', MetaT ty'')
+
+  pure (tm'', MetaT $ forall_ vars ty')
 
 instantiateWith
   :: (Ord tyVar, Show tyVar, Show x)
@@ -254,8 +260,8 @@ applyEvidence
   -> KindM s' (TypeM s tyVar tmVar) (EvT (Tm (Meta 'Check Int tyVar)) x)
 applyEvidence _ [] !a = pure a
 applyEvidence ctx (p:ps) (EvT !a) = do
-  (_, EvT e) <- lift $ constructEvidence ctx p
-  applyEvidence ctx ps $ EvT (TmApp a e)
+  (_, e) <- lift $ constructEvidence p
+  applyEvidence ctx ps $ EvT (TmApp a $ unEvT (ctx <$> e))
 
 funmatch ::
   (Show tyVar, Ord tyVar) =>

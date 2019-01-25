@@ -526,9 +526,10 @@ typesSpec supply =
            TmApp
              (tmSelect (pure "r") (Label "f"))
              (tmSelect (pure "r") (Label "x")))
-           (tmExtend (Label "f") (lam "x" $ pure "x") $
-           tmExtend (Label "x") (TmInt 99) $
-           (TmRecord []))
+           (TmRecord
+            [ (Label "f", lam "x" $ pure "x")
+            , (Label "x", TmInt 99)
+            ])
 
       res `shouldBe`
         Right

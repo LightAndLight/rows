@@ -25,17 +25,22 @@ data Tm tyVar a
   --
   -- @x : T@
   = TmAnn (Tm tyVar a) (Ty tyVar)
+
   -- | Term variable
   -- @x@
   | TmVar a
+
   -- | Function elimination
   --
   -- @f x@
   | TmApp (Tm tyVar a) (Tm tyVar a)
+
   -- | Function introduction
   --
   -- @\x -> x@
-  | TmLam (Scope () (Tm tyVar) a)
+  --
+  -- @\(x : A) -> x@
+  | TmLam (Maybe (Ty tyVar)) (Scope () (Tm tyVar) a)
 
   -- | Record extension
   --
@@ -101,7 +106,7 @@ traverseTy f = go
         TmVar a -> pure $ TmVar a
         TmApp a b -> TmApp <$> go a <*> go b
         TmAdd a b -> TmAdd <$> go a <*> go b
-        TmLam s -> TmLam . toScope <$> go (fromScope s)
+        TmLam x s -> TmLam <$> traverse f x <*> (toScope <$> go (fromScope s))
         TmRecord a -> TmRecord <$> traverse (traverse go) a
         TmExtend l -> pure $ TmExtend l
         TmSelect l -> pure $ TmSelect l
@@ -118,7 +123,7 @@ instance Bifunctor Tm where
       TmVar a -> TmVar $ g a
       TmApp a b -> TmApp (bimap f g a) (bimap f g b)
       TmAdd a b -> TmAdd (bimap f g a) (bimap f g b)
-      TmLam s -> TmLam . hoistScope (first f) $ fmap g s
+      TmLam x s -> TmLam (fmap f <$> x) . hoistScope (first f) $ fmap g s
       TmRecord a -> TmRecord $ fmap (fmap (bimap f g)) a
       TmExtend l -> TmExtend l
       TmSelect l -> TmSelect l
@@ -138,7 +143,7 @@ instance Bitraversable Tm where
       TmVar a -> TmVar <$> g a
       TmApp a b -> TmApp <$> bitraverse f g a <*> bitraverse f g b
       TmAdd a b -> TmAdd <$> bitraverse f g a <*> bitraverse f g b
-      TmLam s -> TmLam <$> bitraverseScope f g s
+      TmLam x s -> TmLam <$> traverse (traverse f) x <*> bitraverseScope f g s
       TmRecord a -> TmRecord <$> traverse (traverse (bitraverse f g)) a
       TmExtend l -> pure $ TmExtend l
       TmSelect l -> pure $ TmSelect l
@@ -157,7 +162,7 @@ instance Plated1 (Tm tyVar) where
           TmVar a -> pure $ TmVar a
           TmApp a b -> TmApp <$> f a <*> f b
           TmAdd a b -> TmAdd <$> f a <*> f b
-          TmLam s -> TmLam . toScope <$> f (fromScope s)
+          TmLam x s -> TmLam x . toScope <$> f (fromScope s)
           TmRecord a -> TmRecord <$> traverse (traverse f) a
           TmExtend l -> pure $ TmExtend l
           TmSelect l -> pure $ TmSelect l
@@ -179,7 +184,7 @@ traverseTmLeaves f = go
         TmAnn a b -> (\a' -> TmAnn a' b) <$> go a
         TmApp a b -> TmApp <$> go a <*> go b
         TmAdd a b -> TmAdd <$> go a <*> go b
-        TmLam s -> TmLam . toScope <$> go (fromScope s)
+        TmLam x s -> TmLam x . toScope <$> go (fromScope s)
         TmRecord a -> TmRecord <$> traverse (traverse go) a
         TmVar a -> f $ TmVar a
         TmExtend l -> f $ TmExtend l
@@ -196,8 +201,11 @@ foldMapTmLeaves
   -> forall x. Tm tyVar x -> m
 foldMapTmLeaves f = getConst . traverseTmLeaves (Const . f)
 
-lam :: Eq a => a -> Tm tyVar a -> Tm tyVar a
-lam a = TmLam . abstract1 a
+lam :: Eq a => (a, Ty tyVar) -> Tm tyVar a -> Tm tyVar a
+lam (a, ty) = TmLam (Just ty) . abstract1 a
+
+lam_ :: Eq a => a -> Tm tyVar a -> Tm tyVar a
+lam_ a = TmLam Nothing . abstract1 a
 
 tmExtend :: Label -> Tm tyVar a -> Tm tyVar a -> Tm tyVar a
 tmExtend l a = TmApp $ TmApp (TmExtend l) a
@@ -227,7 +235,7 @@ stripAnnots tm =
     TmVar a -> TmVar a
     TmApp a b -> TmApp (stripAnnots a) (stripAnnots b)
     TmAdd a b -> TmAdd (stripAnnots a) (stripAnnots b)
-    TmLam s -> TmLam . toScope . stripAnnots $ fromScope s
+    TmLam _ s -> TmLam Nothing . toScope . stripAnnots $ fromScope s
     TmRecord a -> TmRecord $ fmap (fmap stripAnnots) a
     TmExtend l -> TmExtend l
     TmSelect l -> TmSelect l

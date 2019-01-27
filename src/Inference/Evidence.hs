@@ -190,6 +190,6 @@ abstractEvidence (EvT tm) = do
     abstractPlaceholders ((ph, ty) : rest) t = do
       removePlaceholder ph
       bimap
-        (TmLam . abstract (foldEv (guard . (== ph)) (const Nothing)))
+        (TmLam Nothing . abstract (foldEv (guard . (== ph)) (const Nothing)))
         (ty :) <$>
         abstractPlaceholders rest t

@@ -55,8 +55,8 @@ inline binds = go id Right
         TmApp a b -> TmApp <$> go ctx toVar a <*> go ctx toVar b
         TmAdd a b -> TmAdd <$> go ctx toVar a <*> go ctx toVar b
         TmRecord a -> TmRecord <$> traverse (traverse (go ctx toVar)) a
-        TmLam s ->
-          TmLam . toScope <$>
+        TmLam x s ->
+          TmLam x . toScope <$>
           go (F . ctx) (unvar (Left . B) (first F . toVar)) (fromScope s)
         TmExtend l -> pure $ TmExtend l
         TmSelect l -> pure $ TmSelect l
@@ -69,7 +69,7 @@ inline binds = go id Right
 -- |
 -- @\\x -> f x ~~> f   when   notFreeIn(x, f)@
 etaReduce :: Tm ty a -> Maybe (Tm ty a)
-etaReduce (TmLam s) =
+etaReduce (TmLam _ s) =
   case fromScope s of
     TmApp f (TmVar (B ())) -> traverse (preview _F) f
     _ -> Nothing
@@ -82,7 +82,7 @@ betaReduce tm =
   -- beta reduction is a valid optimisation so long as we don't reduce
   -- variables
   case tm of
-    TmApp (TmLam s) x -> Just $ instantiate1 x s
+    TmApp (TmLam _ s) x -> Just $ instantiate1 x s
     _ -> Nothing
 
 -- |
@@ -114,7 +114,7 @@ variantElim tm =
       then Just $ TmApp fVal a
       else
         case rest of
-          TmLam fRest -> variantElim $ instantiate1 (tmInject l' a) fRest
+          TmLam _ fRest -> variantElim $ instantiate1 (tmInject l' a) fRest
           _ -> Just $ TmApp rest (tmInject l' a)
     _ -> Nothing
 

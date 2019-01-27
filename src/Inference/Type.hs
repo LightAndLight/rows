@@ -20,7 +20,7 @@ import Data.Bifunctor (first)
 import Data.Bitraversable (bitraverse)
 import Data.Coerce (coerce)
 import Data.Foldable (traverse_)
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, isJust)
 import Data.Traversable (for)
 import Data.Void (Void, absurd)
 
@@ -126,13 +126,11 @@ instanceOf
 instanceOf ctx tyCtorCtx ty1 (tm2, ty2) = do
   (_, constraints1, ty1') <- instantiateTyWith (lift . newSkolem) ty1
   (_, constraints2, ty2') <- instantiateTyWith (lift . newMetaInf) ty2
-  {-
+
   case (unMetaT ty1', unMetaT ty2') of
     (TyApp TyVariant r, TyApp TyVariant r') -> rowInstanceOf r r'
     (TyApp TyRecord r, TyApp TyRecord r') -> rowInstanceOf r r'
     _ -> unifyType tyCtorCtx ty1' ty2'
-  -}
-  unifyType tyCtorCtx ty1' ty2'
 
   constraints1' <- lift $ traverse findType constraints1
   constraints2' <- lift $ traverse findType constraints2
@@ -141,8 +139,25 @@ instanceOf ctx tyCtorCtx ty1 (tm2, ty2) = do
     tm2' <- applyEvidence ctx False constraints2' tm2
     (tm2'', _) <- lift $ abstractEvidence tm2'
     pure tm2''
-  {-
   where
+    -- this is an artifical restriction until we can get impredicativity
+    -- to fully co-operate with datatypes
+    instanceOfInner tyA tyB = do
+      (_, constraints1, tyA') <- instantiateTyWith (lift . newSkolem) tyA
+      (_, constraints2, tyB') <- instantiateTyWith (lift . newMetaInf) tyB
+      case (unMetaT tyA', unMetaT tyB') of
+        (TyApp TyVariant r, TyApp TyVariant r') -> rowInstanceOf r r'
+        (TyApp TyRecord r, TyApp TyRecord r') -> rowInstanceOf r r'
+        _ ->
+          unifyType tyCtorCtx tyA' tyB'
+
+      constraints1' <- lift $ traverse findType constraints1
+      constraints2' <- lift $ traverse findType constraints2
+      localEvidence $ do
+        traverse_ newPlaceholder constraints1'
+        lift $ traverse_ (constructEvidence False) constraints2'
+        lift $ traverse_ (constructEvidence False) constraints1'
+
     rowInstanceOf TyRowEmpty TyRowEmpty = pure ()
     rowInstanceOf TyRowEmpty (TyApp (TyApp TyRowExtend{} _) _) = pure ()
     rowInstanceOf x@(TyApp (TyApp (TyRowExtend l) a) r) r' = do
@@ -153,7 +168,7 @@ instanceOf ctx tyCtorCtx ty1 (tm2, ty2) = do
           dB <- lift . displayType $ MetaT r'
           throwError $ TypeMismatch dA dB
         Just (_, a', r'') -> do
-          instanceOf tyCtorCtx (MetaT a) (MetaT a')
+          instanceOfInner (MetaT a) (MetaT a')
           MetaT s <- lift $ findType (MetaT r)
           MetaT s'' <- lift $ findType (MetaT r'')
           rowInstanceOf s s''
@@ -167,7 +182,6 @@ instanceOf ctx tyCtorCtx ty1 (tm2, ty2) = do
         show dA <>
         "\n\n" <>
         show dB
-  -}
 
 unifyType
   :: forall s s' tmVar tyVar
@@ -342,15 +356,8 @@ inferTypeM
 inferTypeM ctx tyCtorCtx varCtx tm =
   case unEvT tm of
     TmAnn a ty -> do
-      (tm', aTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT a
-
-      -- (_, tm'', ty') <- instantiate ctx tm' (MetaT ty)
-      EvT tm'' <- instanceOf ctx tyCtorCtx (MetaT ty) (tm', aTy)
-      -- (EvT tm''', ty'') <- lift $ generalize ctx tm'' ty'
-
-      -- pure (EvT $ TmAnn tm''' ty, ty'')
-      pure (EvT $ TmAnn tm'' ty, MetaT ty)
-
+      inferTypeM ctx tyCtorCtx varCtx . EvT $
+        TmApp (TmLam (Just ty) $ toScope (pure $ B())) a
     TmVar P{} -> error "trying to infer type for evidence placeholder"
     TmVar (V a) -> do
       ty <- either (throwError . TypeVarNotFound) pure (varCtx a)
@@ -364,6 +371,7 @@ inferTypeM ctx tyCtorCtx varCtx tm =
       (bTm, bTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT b
 
       inTy' <- lift $ findType inTy
+
       EvT bTm' <- instanceOf ctx tyCtorCtx inTy' (bTm, bTy)
 
       let tm' = TmApp aTm' bTm'
@@ -380,9 +388,7 @@ inferTypeM ctx tyCtorCtx varCtx tm =
       res <-
         for rs $ \(l, v) -> do
           (v', vTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT v
-          -- this seems simultaneously correct and incorrect
-          (_, v'', vTy') <- instantiate ctx v' vTy
-          pure (l, v'', vTy')
+          pure (l, v', vTy)
 
       let tm' = TmRecord $ (\(l, EvT v, _) -> (l, v)) <$> res
       ty' <-
@@ -392,28 +398,28 @@ inferTypeM ctx tyCtorCtx varCtx tm =
         foldr (\(l, _, MetaT vTy) -> tyRowExtend l vTy) TyRowEmpty res
 
       lift $ generalize ctx (EvT tm') ty'
-    TmLam s -> do
+    TmLam aTy s -> do
       (argTy, bodyTm, bodyTy) <- do
-        argTy <- lift $ newMetaRank KindType
+        argTy <- maybe (lift $ TyVar <$> newMetaRank KindType) pure aTy
         ranked $ do
           (body, bodyTy) <-
             inferTypeM
               (F . ctx)
               tyCtorCtx
-              (unvar (const $ Right $ MetaT $ TyVar argTy) varCtx)
+              (unvar (const $ Right $ MetaT argTy) varCtx)
               (EvT $ sequence <$> fromScope s)
           pure (argTy, body, bodyTy)
 
       (_, EvT bodyTm', MetaT bodyTy') <- instantiate (F . ctx) bodyTm bodyTy
 
-      MetaT argTy' <- lift . findType $ MetaT (TyVar argTy)
-      unless (isMonotype argTy') $ do
+      MetaT argTy' <- lift . findType $ MetaT argTy
+      unless (isJust aTy || isMonotype argTy') $ do
         dArgTy <- lift . displayType $ MetaT argTy'
         throwError $ TypePolymorphicArg dArgTy
 
       p <- lift . findType $ MetaT $ tyArr argTy' bodyTy'
 
-      let tm' = EvT . TmLam $ toScope $ sequence <$> bodyTm'
+      let tm' = EvT . TmLam aTy $ toScope $ sequence <$> bodyTm'
 
       lift $ generalize ctx tm' p
     TmSelect l ->

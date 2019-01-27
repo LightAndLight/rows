@@ -33,10 +33,10 @@ parseSpec =
   describe "Parse" $ do
     describe "Term" $ do
       testParseTmSuccess "x" (pure "x")
-      testParseTmSuccess "\\x -> x" (lam "x" $ pure "x")
+      testParseTmSuccess "\\x -> x" (lam_ "x" $ pure "x")
       testParseTmSuccess
         "\\x -> \\y -> x y"
-        (lam "x" $ lam "y" $ TmApp (pure "x") (pure "y"))
+        (lam_ "x" $ lam_ "y" $ TmApp (pure "x") (pure "y"))
       testParseTmSuccess
         "x - a - b"
         (tmRestrict (tmRestrict (pure "x") (Label "a")) (Label "b"))
@@ -52,10 +52,10 @@ parseSpec =
           Label "c")
       testParseTmSuccess
         "\\x -> x.a - b"
-        (lam "x" $ tmSelect (pure "x") (Label "a") `tmRestrict` Label "b")
+        (lam_ "x" $ tmSelect (pure "x") (Label "a") `tmRestrict` Label "b")
       testParseTmSuccess
         "(\\x -> x.a) - b"
-        (lam "x" (tmSelect (pure "x") (Label "a")) `tmRestrict` Label "b")
+        (lam_ "x" (tmSelect (pure "x") (Label "a")) `tmRestrict` Label "b")
       testParseTmSuccess
         "*{x = a | *{ y = b | *{ z = c | *{}}}}"
         (tmExtend (Label "x") (pure "a") $
@@ -71,11 +71,11 @@ parseSpec =
          ])
       testParseTmSuccess
         "+{ a is x ? \\b -> b | \\c -> c }"
-        (tmMatch (pure "a") (Label "x") (lam "b" $ pure "b") (lam "c" $ pure "c"))
+        (tmMatch (pure "a") (Label "x") (lam_ "b" $ pure "b") (lam_ "c" $ pure "c"))
       testParseTmSuccess
         "+{ a is x ? b | \\a' -> +{ a' is y ? d | \\a'' -> a'' }}"
-        (tmMatch (pure "a") (Label "x") (pure "b") $ lam "a'" $
-          tmMatch (pure "a'") (Label "y") (pure "d") $ lam "a''" $
+        (tmMatch (pure "a") (Label "x") (pure "b") $ lam_ "a'" $
+          tmMatch (pure "a'") (Label "y") (pure "d") $ lam_ "a''" $
           pure "a''")
       testParseTmSuccess
         "+{ a = b }"
@@ -99,10 +99,10 @@ parseSpec =
         (TmApp (pure "a") (TmAnn (pure "b") (TyCtor "T")))
       testParseTmSuccess
         "\\x -> y : T"
-        (lam "x" $ TmAnn (pure "y") (TyCtor "T"))
+        (lam_ "x" $ TmAnn (pure "y") (TyCtor "T"))
       testParseTmSuccess
         "(\\x -> y) : T"
-        (TmAnn (lam "x" $ pure "y") (TyCtor "T"))
+        (TmAnn (lam_ "x" $ pure "y") (TyCtor "T"))
       testParseTmSuccess
         "*{ x = a }.x"
         (tmSelect (TmRecord [(Label "x", pure "a")]) (Label "x"))

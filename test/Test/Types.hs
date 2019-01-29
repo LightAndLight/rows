@@ -655,56 +655,7 @@ typesSpec supply =
             (pure "r")
         )
 
-    it "15) |- \\r -> *{ id = (\\x -> x) : forall a. a -> a | r } : forall r. (id | r) => Record r -> Record (id : forall a. a -> a | r)" $ do
-      let
-        tyCtorCtx _ = Nothing
-
-        tyVarCtx :: String -> Maybe (Kind Void)
-        tyVarCtx = const Nothing
-
-        varCtx :: String -> Either String (Ty tyVar)
-        varCtx x = Left x
-
-      let
-        ty =
-          tyRecord $
-          tyRowExtend (Label "id")
-            (forall_ ["a"] $ tyArr (pure "a") (pure "a"))
-            (pure "r")
-
-      res <-
-        runInferType supply tyCtorCtx tyVarCtx varCtx $
-        (lam_ "r" $
-          tmExtend
-            (Label "id")
-            (lam_ "x" (pure "x") `TmAnn`
-             forall_ ["a"] (tyArr (pure "a") (pure "a")))
-            (pure "r") `TmAnn`
-          ty)
-
-      res `shouldBe`
-        Right
-        ( lam_ "xev" $
-          lam_ "r" $
-          TmApp
-            (TmLam Nothing $ toScope (pure (B ())))
-            (TmApp
-               (TmApp
-                  (lam_ "xev1" $
-                   TmApp
-                     (TmApp (TmExtend (Label "id")) (pure "xev1"))
-                     (TmApp
-                        (TmLam Nothing $ toScope (pure (B ())))
-                        (lam_ "x" (pure "x"))))
-                  (pure "xev"))
-               (pure "r"))
-        , forall_ ["r"] $
-          tyConstraint (tyOffset (Label "f") (pure "r")) $
-          tyArr (tyRecord $ pure "r") $
-          ty
-        )
-
-    it "16) *{ id = \\x -> x } : Record (id : forall a. a -> a)" $ do
+    it "15) *{ id = \\x -> x } : Record (id : forall a. a -> a)" $ do
       let
         tyCtorCtx _ = Nothing
 
@@ -735,7 +686,7 @@ typesSpec supply =
         , ty
         )
 
-    it "17) (\\x -> x) : forall a. a -> a" $ do
+    it "16) (\\x -> x) : forall a. a -> a" $ do
       let
         tyCtorCtx _ = Nothing
 
@@ -756,7 +707,7 @@ typesSpec supply =
         , TyForall 1 (toScope $ tyArr (pure $ B 0) (pure $ B 0))
         )
 
-    it "18) |- *{ id = (\\x -> x) : forall a. a -> a } : Record (id : forall a. a -> a)" $ do
+    it "17) |- *{ id = (\\x -> x) : forall a. a -> a } : Record (id : forall a. a -> a)" $ do
       let
         tyCtorCtx _ = Nothing
 

@@ -1,16 +1,22 @@
+{-# language BangPatterns #-}
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable, DeriveGeneric #-}
 {-# language FlexibleContexts #-}
+{-# language FlexibleInstances, MultiParamTypeClasses #-}
+{-# language LambdaCase #-}
+{-# language StandaloneDeriving #-}
 {-# language TemplateHaskell #-}
+{-# language UndecidableInstances #-}
 module Ty where
 
 import Bound.Scope (Scope, abstract)
 import Bound.TH (makeBound)
+import Control.Lens.Fold (allOf)
 import Control.Lens.Plated (Plated(..), gplate)
-import Control.Lens.Wrapped (_Wrapped, _Unwrapped)
-import Control.Monad ((<=<))
+import Control.Lens.Prism (prism')
+import Control.Lens.Wrapped (_Wrapped)
 import Data.Deriving (deriveEq1, deriveOrd1, deriveShow1)
-import Data.Equivalence.Monad (MonadEquiv, classDesc)
 import Data.List (elemIndex)
+import Data.Set (Set)
 import GHC.Generics (Generic)
 
 import qualified Data.Set as Set
@@ -73,13 +79,36 @@ data Ty a
   --
   -- @Int@
   | TyInt
-  deriving (Eq, Show, Functor, Foldable, Traversable, Generic)
+
+  -- | Universal quantification
+  --
+  -- @forall x_1 x_2 ... x_n. _@
+  | TyForall !Int (Scope Int Ty a)
+
+  -- | Existential quantification
+  --
+  -- @exists x_1 x_2 ... x_n. _@
+  | TyExists !Int (Scope Int Ty a)
+  deriving (Functor, Foldable, Traversable, Generic)
 deriveEq1 ''Ty
 deriveOrd1 ''Ty
 deriveShow1 ''Ty
 makeBound ''Ty
+deriving instance Eq a => Eq (Ty a)
+deriving instance Show a => Show (Ty a)
 
 instance Plated (Ty a) where; plate = gplate
+
+instance AsMeta x s a b => AsMeta (Ty x) s a b where
+  _Meta = prism' pure (\case; TyVar a -> Just a; _ -> Nothing) . _Meta
+
+instance AsMeta (MetaT s a Ty b) s a b where
+  _Meta = _Wrapped._Meta
+
+isMonotype :: Ty a -> Bool
+isMonotype ty =
+  (case ty of; TyForall{} -> False; _ -> True) &&
+  allOf plate isMonotype ty
 
 tyArr :: Ty a -> Ty a -> Ty a
 tyArr a = TyApp $ TyApp TyArr a
@@ -99,6 +128,12 @@ tyVariant = TyApp TyVariant
 tyOffset :: Label -> Ty a -> Ty a
 tyOffset l = TyApp $ TyOffset l
 
+unfoldApps :: Ty a -> (Int, Ty a, [Ty a])
+unfoldApps = go 0 []
+  where
+    go !n xs (TyApp a b) = go (n+1) (b:xs) a
+    go !n xs a = (n, a, xs)
+
 stripConstraints :: Ty a -> (Ty a, [Ty a])
 stripConstraints ty =
   -- if we introduce first-class polymorphism, then we can't float
@@ -116,26 +151,32 @@ stripConstraints ty =
       TyOffset{} -> (ty, [])
       TyConstraint -> (ty, [])
       TyInt -> (ty, [])
+      TyExists{} -> (ty, [])
+      TyForall{} -> (ty, [])
 
-findType
-  :: MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-  => MetaT Int Ty tyVar -> m (MetaT Int Ty tyVar)
-findType = _Wrapped go
-  where
-    go = plate go <=< _Unwrapped classDesc
-
-data Forall a
-  = Forall
-  { _forallSize :: !Int
-  , _forallType :: Scope Int Ty a
-  } deriving (Eq, Show)
-
-forAll
+ordNub
   :: Ord a
-  => [a]
-  -> Ty a
-  -> Forall a
-forAll as ty =
-  Forall
-    (Set.size $ Set.fromList as)
-    (abstract (`elemIndex` as) ty)
+  => Set a -- ^ Set of all the elements in the list
+  -> [a] -- ^ The list to nub
+  -> [a]
+ordNub _ [] = []
+ordNub set (x:xs) =
+  if x `Set.member` set
+  then x : ordNub (Set.delete x set) xs
+  else ordNub set xs
+
+forall_ :: Ord a => [a] -> Ty a -> Ty a
+forall_ [] ty = ty
+forall_ as ty =
+  TyForall (Set.size asSet) $
+  abstract (`elemIndex` ordNub asSet as) ty
+  where
+    asSet = Set.fromList as
+
+exists_ :: Ord a => [a] -> Ty a -> Ty a
+exists_ [] ty = ty
+exists_ as ty =
+  TyExists (Set.size asSet) $
+  abstract (`elemIndex` ordNub asSet as) ty
+  where
+    asSet = Set.fromList as

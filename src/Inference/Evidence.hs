@@ -1,3 +1,4 @@
+{-# language DataKinds #-}
 {-# language FlexibleContexts #-}
 {-# language OverloadedLists #-}
 {-# language ScopedTypeVariables #-}
@@ -5,111 +6,190 @@ module Inference.Evidence where
 
 import Bound.Scope (abstract)
 import Control.Lens.Getter (use)
-import Control.Monad.Except (MonadError)
-import Control.Monad.State (MonadState)
-import Control.Monad.Trans.Class (lift)
-import Control.Monad.Writer.Strict (WriterT, runWriterT, tell)
-import Data.Either (partitionEithers)
-import Data.Equivalence.Monad (MonadEquiv)
-import Data.Foldable (toList)
-import Data.Sequence (Seq)
-import Data.Traversable (for)
+import Control.Lens.Wrapped (_Wrapped)
+import Control.Monad (void, join, guard)
+import Control.Monad.Except (throwError)
+import Data.Bifunctor (bimap)
+import Data.Set (Set)
 
-import qualified Data.Sequence as Seq
+import qualified Data.Set as Set
 
+import Data.List.Utils (anyA, allA, findM)
 import Evidence
 import Inference.State
 import Inference.Type.Error
+import Inference.Type.Monad
 import Meta
 import Tm
 import Ty
 
-evidenceFor
-  :: ( MonadState (InferState Int tyVar Int) m
-     , MonadError (TypeError Int tyVar tmVar) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Show tyVar
-     )
-  => MetaT Int Ty tyVar
-  -> WriterT
-       (Seq (EvEntry Int tyVar Int))
-       m
-       (Maybe (EvT Int (Tm (Meta Int tyVar)) x))
-evidenceFor ty = do
-  ty' <- lift $ findType ty
-  case unMetaT ty' of
-    TyApp TyOffset{} TyRowEmpty -> pure . Just . EvT $ TmInt 0
-    TyApp (TyOffset l) (TyApp (TyApp (TyRowExtend l') _) rest) -> do
-      let super = MetaT $ TyApp (TyOffset l) rest
-      res <- evidenceFor super
-      e <-
-        maybe
-          (do
-              e' <- newEv super
-              tell [EvEntry (foldEv id undefined e') super]
-              pure $ TmVar e')
-          (pure . unEvT)
-          res
-      pure . Just . EvT $
-        if l < l'
-        then e
-        else TmAdd (TmInt 1) e
-    _ -> pure Nothing
-
-getEvidence
-  :: forall tyVar tmVar c m x
-   . ( MonadState (InferState Int tyVar Int) m
-     , MonadError (TypeError Int tyVar tmVar) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Show tyVar
-     )
-  => m
-       ( [(Int, EvT Int (Tm (Meta Int tyVar)) x)]
-       , [(Int, MetaT Int Ty tyVar)]
-       )
-getEvidence = use inferEvidence >>= go
-  where
-    go
-      :: Seq (EvEntry Int tyVar Int)
-      -> m
-           ( [(Int, EvT Int (Tm (Meta Int tyVar)) x)]
-           , [(Int, MetaT Int Ty tyVar)]
-           )
-    go evs | Seq.null evs = pure mempty
-    go evs = do
-      (evs', more) <-
-        runWriterT $
-        for evs $ \(EvEntry e ty) ->
-          maybe (Right (e, ty)) (Left . (,) e) <$> evidenceFor ty
-      (partitionEithers (toList evs') <>) <$> go more
-
-finalizeEvidence
-  :: forall tyVar tmVar c x m
-   . ( MonadState (InferState Int tyVar Int) m
-     , MonadError (TypeError Int tyVar tmVar) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Eq tyVar
-     , Show tyVar, Show tmVar
-     , Show x
-     )
-  => Tm (Meta Int tyVar) (Ev Int x)
-  -> m (Tm (Meta Int tyVar) x, [MetaT Int Ty tyVar])
-finalizeEvidence tm = do
-  (sat, unsat) <- getEvidence
+-- | Match two predicate heads
+--
+-- I think later down the track we'll want to do unification here
+matchHead
+  :: Eq tyVar
+  => MetaT 'Check Int Ty tyVar -- ^ Desired head
+  -> MetaT 'Check Int Ty tyVar -- ^ Actual head
+  -> TypeM s tyVar tmVar Bool
+matchHead desired actual =
   let
-    (unsatVals, unsatTypes) = unzip unsat
-    tm' = tm >>= foldEv (\x -> maybe (pure $ E x) unEvT $ lookup x sat) (pure . V)
-    tm'' =
+    (dCount, dHead, dArgs) = unfoldApps $ unMetaT desired
+    (aCount, aHead, aArgs) = unfoldApps $ unMetaT actual
+  in
+  if dHead == aHead && dCount == aCount
+    then allA (\(d, a) -> pure $ d == a) $ zip dArgs aArgs
+    else pure False
+
+-- |
+-- Entailment
+--
+-- @||- (l | {})@
+--
+-- @(l | r) ||- (l | (l' | r))    (l <= l')@
+--
+-- @(l | r) ||- (l | (l' | r))    (l > l')@
+--
+-- @A ||- A@
+entails
+  :: (Ord tyVar, Show tyVar)
+  => [MetaT 'Check Int Ty tyVar]
+  -> MetaT 'Check Int Ty tyVar
+  -> TypeM s tyVar tmVar ()
+entails tys ty =
+  case unMetaT ty of
+    TyApp TyOffset{} TyRowEmpty -> pure ()
+    TyApp (TyOffset l) (TyApp (TyApp TyRowExtend{} _) rest) ->
+      entails tys $ MetaT (TyApp (TyOffset l) rest)
+    _ -> do
+      dTy <- displayType ty
+      dTys <- traverse displayType tys
+      void $
+        maybe (throwError $ TypeCannotDeduce dTy dTys) pure =<<
+        findM (matchHead ty) tys
+
+-- |
+-- Evidence construction
+--
+-- @||- 0 : (l | {})@
+--
+-- @p : (l | r) ||- p : (l | (l' | r))    (l <= l')@
+--
+-- @p : (l | r) ||- p : (l | (l' | r))    (l > l')@
+--
+-- @p : A ||- p : A@
+constructEvidence ::
+  (Ord tyVar, Show tyVar) =>
+  Bool -> -- ^ Can we introduce new constraints?
+  MetaT 'Check Int Ty tyVar -> -- ^ Type for which we construct evidence
+  TypeM s tyVar tmVar (Bool, EvT (Tm (Meta 'Check Int tyVar)) tmVar)
+constructEvidence canIntro evTy =
+  case unMetaT evTy of
+    TyApp TyOffset{} TyRowEmpty -> pure (False, EvT $ TmInt 0)
+    TyApp (TyOffset l) (TyApp (TyApp (TyRowExtend l') _) rest) -> do
+      (more, evTm) <- constructEvidence canIntro $ MetaT (tyOffset l rest)
+      pure $
+        if l < l'
+        then (more, evTm)
+        else (more, EvT $ TmAdd (TmInt 1) (unEvT evTm))
+    _ -> do
+      mFound <-
+        findM (\(EvEntry _ _ evTy') -> matchHead evTy evTy') =<<
+        use inferEvidence
+      case mFound of
+        Nothing ->
+          if canIntro
+          then (,) True . EvT . TmVar <$> newPlaceholder evTy
+          else do
+            dTy <- displayType evTy
+            dTys <-
+              foldr
+                (\(EvEntry _ _ evTy') rest ->
+                   (:) <$> displayType evTy' <*> rest)
+                (pure []) =<<
+              use inferEvidence
+            throwError $ TypeCannotDeduce dTy dTys
+        Just (EvEntry _ evTm _) -> pure (False, evTm)
+
+substM :: (Monad f, Monad m, Traversable m) => (a -> f (m b)) -> m a -> f (m b)
+substM f = fmap join . traverse f
+
+solvePlaceholders ::
+  forall tyVar x s tmVar.
+  (Ord tyVar, Show tyVar) =>
+  (tmVar -> x) ->
+  EvT (Tm (Meta 'Check Int tyVar)) x ->
+  TypeM s tyVar tmVar (EvT (Tm (Meta 'Check Int tyVar)) x)
+solvePlaceholders ctx = _Wrapped (substM go)
+  where
+    go :: Ev x -> TypeM s tyVar tmVar (Tm (Meta 'Check Int tyVar) (Ev x))
+    go (V v) = pure $ pure (V v)
+    go (P ph) = do
+      EvEntry _ _ evTy <- lookupEvidence ph
+
+      evTy' <- findType evTy
+      (more, evTm') <- constructEvidence True evTy'
+      updateEvidence ph evTm' evTy'
+
+      let evTm'' = ctx <$> evTm'
+      if more
+        then unEvT <$> solvePlaceholders ctx evTm''
+        else pure $ unEvT evTm''
+
+abstractEvidence ::
+  forall tyVar x s tmVar.
+  (Show tyVar, Ord tyVar) =>
+  EvT (Tm (Meta 'Check Int tyVar)) x ->
+  TypeM s tyVar tmVar
+    ( EvT (Tm (Meta 'Check Int tyVar)) x
+    , [MetaT 'Check Int Ty tyVar]
+    )
+abstractEvidence (EvT tm) = do
+  (placeholders, vars) <- listify tm
+
+  rank <- use inferRank
+  constraints <- constraintsFor (Rank rank) placeholders vars
+
+  (tm', constraints') <- abstractPlaceholders constraints tm
+
+  pure (EvT tm', constraints')
+
+  where
+    listify ::
+      Tm (Meta 'Check Int tyVar) (Ev x) ->
+      TypeM s tyVar tmVar (Set Placeholder, [Ev x])
+    listify =
       foldr
-        (\a ->
-           TmLam .
-           abstract
-             (foldEv
-                (\x -> if x == a then Just () else Nothing)
-                (const Nothing)))
-        tm'
-        unsatVals
-  either
-    (\x -> error $ "un-abstracted evidence: " <> show x <> "\n\n" <> show unsatVals)
-    (\x -> pure (x, unsatTypes))
-    (traverse (foldEv Left Right) tm'')
+        (\a b ->
+            case a of
+              P ph -> bimap (Set.insert ph) (a :) <$> b
+              _ -> b)
+        (pure (Set.empty, []))
+
+    constraintsFor ::
+      Rank ->
+      Set Placeholder ->
+      [Ev x] ->
+      TypeM s tyVar tmVar [(Placeholder, MetaT 'Check Int Ty tyVar)]
+    constraintsFor _ _ [] = pure []
+    constraintsFor rank phs (ev:evs) =
+      case ev of
+        P ph | ph `Set.member` phs -> do
+          EvEntry _ _ evTy <- lookupEvidence ph
+
+          defer <- anyA (fmap (maybe False (< rank)) . metaRank) (unMetaT evTy)
+          if defer
+            then constraintsFor rank (Set.delete ph phs) evs
+            else ((ph, evTy) :) <$> constraintsFor rank (Set.delete ph phs) evs
+        _ -> constraintsFor rank phs evs
+
+    abstractPlaceholders
+      :: [(Placeholder, MetaT 'Check Int Ty tyVar)]
+      -> Tm (Meta 'Check Int tyVar) (Ev x)
+      -> TypeM s tyVar tmVar (Tm (Meta 'Check Int tyVar) (Ev x), [MetaT 'Check Int Ty tyVar])
+    abstractPlaceholders [] t = pure (t, [])
+    abstractPlaceholders ((ph, ty) : rest) t = do
+      removePlaceholder ph
+      bimap
+        (TmLam Nothing . abstract (foldEv (guard . (== ph)) (const Nothing)))
+        (ty :) <$>
+        abstractPlaceholders rest t

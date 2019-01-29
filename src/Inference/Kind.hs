@@ -1,21 +1,23 @@
 {-# language FlexibleContexts #-}
-{-# language FlexibleInstances, FunctionalDependencies, MultiParamTypeClasses #-}
+{-# language FlexibleInstances, MultiParamTypeClasses #-}
 {-# language GeneralizedNewtypeDeriving #-}
-{-# language LambdaCase #-}
+{-# language RankNTypes #-}
 {-# language ScopedTypeVariables #-}
-{-# language TemplateHaskell #-}
+{-# language StandaloneDeriving, UndecidableInstances #-}
 {-# language TupleSections #-}
 module Inference.Kind where
 
+import Bound.Scope (fromScope)
+import Bound.Var (unvar)
 import Control.Applicative ((<|>))
 import Control.Concurrent.Supply (Supply, freshId)
 import Control.Lens.Plated (plate)
 import Control.Lens.Review ((#))
 import Control.Lens.Traversal (traverseOf)
-import Control.Monad ((<=<))
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.State (MonadState, state)
-import Data.Equivalence.Monad (MonadEquiv, EquivT, equate, classDesc, runEquivT)
+import Control.Monad.Trans.Class (MonadTrans, lift)
+import Control.Monad.State (MonadState(..), StateT, evalStateT, state)
+import Data.Equivalence.Monad (EquivT, equate, classDesc, runEquivT)
 import Data.Foldable (for_)
 import Data.Traversable (for)
 import Data.Void (Void, absurd)
@@ -24,8 +26,18 @@ import Inference.Kind.Error
 import Kind
 import Ty
 
-occursKind :: Eq meta => meta -> Kind meta -> Bool
-occursKind v = foldr (\a b -> a == v || b) False
+newtype KindM s m a
+  = KindM
+  { unKindM :: StateT Supply (EquivT s (Kind Int) (Kind Int) m) a
+  } deriving (Functor, Applicative, Monad)
+deriving instance MonadError e m => MonadError e (KindM s m)
+
+instance MonadState s m => MonadState s (KindM s' m) where
+  get = lift get
+  put = lift . put
+
+instance MonadTrans (KindM s) where
+  lift = KindM . lift . lift
 
 combineKind :: Kind Int -> Kind Int -> Kind Int
 combineKind KindType KindType = KindType
@@ -37,40 +49,50 @@ combineKind KindVar{} y = y
 combineKind x KindVar{} = x
 combineKind _ _ = error "combineKind: combining un-unifiable terms"
 
-zonkKinds
-  :: MonadEquiv c (Kind Int) (Kind Int) m
-  => Kind Int
-  -> m (Kind Void)
-zonkKinds k = (>> KindType) <$> findKind k
+runKindM :: forall m a. Monad m => Supply -> (forall s. KindM s m a) -> m a
+runKindM supply ma = runEquivT id combineKind (go ma)
+  where
+    go :: forall s. KindM s m a -> EquivT s (Kind Int) (Kind Int) m a
+    go (KindM mb) = evalStateT mb supply
 
-findKind
-  :: MonadEquiv c (Kind Int) (Kind Int) m
-  => Kind Int
-  -> m (Kind Int)
-findKind = traverseOf plate findKind <=< classDesc
+equateKind :: Monad m => Kind Int -> Kind Int -> KindM s m ()
+equateKind a b = KindM $ lift $ equate a b
+
+newKindMeta :: Monad m => KindM s m Int
+newKindMeta = KindM $ state freshId
+
+findKind :: Monad m => Kind Int -> KindM s m (Kind Int)
+findKind a = KindM $ go a
+  where
+    go b = traverseOf plate go =<< lift (classDesc b)
+
+occursKind :: Eq meta => meta -> Kind meta -> Bool
+occursKind v = foldr (\a b -> a == v || b) False
+
+zonkKinds :: Monad m => Kind Int -> KindM s m (Kind Void)
+zonkKinds k = (>> KindType) <$> findKind k
 
 unifyKind
   :: ( AsKindError e a
      , MonadError e m
-     , MonadEquiv c (Kind Int) (Kind Int) m
      )
   => Kind Int
   -> Kind Int
-  -> m ()
+  -> KindM s m ()
 unifyKind x y = do
   x' <- findKind x
   y' <- findKind y
   go x' y'
   where
-    go (KindVar x') (KindVar y') = equate (KindVar x') (KindVar y')
+    go (KindVar x') (KindVar y') = equateKind (KindVar x') (KindVar y')
     go (KindVar x') k =
       if occursKind x' k
       then throwError $ _KindOccurs # (x', k)
-      else equate (KindVar x') k
+      else equateKind (KindVar x') k
     go k (KindVar x') =
       if occursKind x' k
       then throwError $ _KindOccurs # (x', k)
-      else equate (KindVar x') k
+      else equateKind (KindVar x') k
     go KindType KindType = pure ()
     go KindRow KindRow = pure ()
     go KindConstraint KindConstraint = pure ()
@@ -79,27 +101,49 @@ unifyKind x y = do
       unifyKind y' y''
     go x' y' = throwError $ _KindMismatch # (x', y')
 
+unsafeKindMap :: (Eq a, Show a) => [(a, b)] -> (a -> Either x b)
+unsafeKindMap mp x =
+  maybe (error $ show x <> " not in kind map") Right $
+  lookup x mp
+
 inferKindM
-  :: ( MonadState Supply m
-     , AsKindError e a
+  :: ( AsKindError e a
      , MonadError e m
-     , MonadEquiv c (Kind Int) (Kind Int) m
      )
   => (String -> Maybe (Kind Int))
-  -> (a -> Maybe (Kind Int))
-  -> Ty a
-  -> m (Kind Int)
+  -> (x -> m (Either a (Kind Int)))
+  -> Ty x
+  -> KindM s m (Kind Int)
+inferKindM ctorCtx varCtx (TyForall n s) = do
+  metas <- for [0..n-1] $ \x -> (,) x . KindVar <$> newKindMeta
+  k <-
+    inferKindM
+      ctorCtx
+      (unvar (pure . unsafeKindMap metas) varCtx)
+      (fromScope s)
+  unifyKind k KindType
+  pure KindType
+inferKindM ctorCtx varCtx (TyExists n s) = do
+  metas <- for [0..n-1] $ \x -> (,) x . KindVar <$> newKindMeta
+  k <-
+    inferKindM
+      ctorCtx
+      (unvar (pure . unsafeKindMap metas) varCtx)
+      (fromScope s)
+  unifyKind k KindType
+  pure KindType
 inferKindM _ _ TyArr = pure $ KindArr KindType (KindArr KindType KindType)
 inferKindM _ _ TyConstraint =
   pure $ KindArr KindConstraint (KindArr KindType KindType)
 inferKindM ctorCtx _ (TyCtor s) =
   maybe (throwError $ _KindCtorNotFound # s) pure $ ctorCtx s
 inferKindM _ varCtx (TyVar x) =
-  maybe (throwError $ _KindVarNotFound # x) pure $ varCtx x
+  lift (varCtx x) >>=
+  either (throwError . (_KindVarNotFound #)) pure
 inferKindM ctorCtx varCtx (TyApp x y) = do
   xKind <- inferKindM ctorCtx varCtx x
   yKind <- inferKindM ctorCtx varCtx y
-  retKind <- KindVar <$> state freshId
+  retKind <- KindVar <$> newKindMeta
   unifyKind xKind (KindArr yKind retKind)
   pure retKind
 inferKindM _ _ TyRowEmpty =
@@ -116,23 +160,24 @@ inferKindM _ _ TyInt{} =
   pure KindType
 
 inferDataDeclKind
-  :: forall e a m
-   . ( MonadState Supply m
-     , AsKindError e a
+  :: forall x e a m
+   . ( AsKindError e a
      , MonadError e m
-     , Eq a
+     , Eq x
      )
-  => (String -> Maybe (Kind Void)) -- ^ Constructors
-  -> (a -> Maybe (Kind Void)) -- ^ Variables
-  -> (String, [a]) -- ^ Type constructor and arguments
-  -> [[Ty a]] -- ^ Fields for each data constructor
+  => Supply -- ^ Variable supply
+  -> (x -> m a) -- ^ Freeze variables
+  -> (String -> Maybe (Kind Void)) -- ^ Constructors
+  -> (x -> Maybe (Kind Void)) -- ^ Variables
+  -> (String, [x]) -- ^ Type constructor and arguments
+  -> [[Ty x]] -- ^ Fields for each data constructor
   -> m (Kind Void)
-inferDataDeclKind ctorCtx varCtx (ctor, params) branches =
-  runEquivT id combineKind go
+inferDataDeclKind supply freezeVars ctorCtx varCtx (ctor, params) branches =
+  runKindM supply go
   where
-    go :: forall s. EquivT s (Kind Int) (Kind Int) m (Kind Void)
+    go :: forall s. KindM s m (Kind Void)
     go = do
-      paramKinds <- for params $ \p -> (p,) . KindVar <$> state freshId
+      paramKinds <- for params $ \p -> (p,) . KindVar <$> newKindMeta
       let ctorKind = foldr (KindArr . snd) KindType paramKinds
 
       let
@@ -147,24 +192,31 @@ inferDataDeclKind ctorCtx varCtx (ctor, params) branches =
 
       for_ branches $ \branch ->
         for_ branch $ \ty -> do
-          k <- inferKindM ctorCtx' varCtx' ty
+          k <-
+            inferKindM
+              ctorCtx'
+              (\x -> maybe (Left <$> freezeVars x) (pure . Right) $ varCtx' x)
+              ty
           unifyKind k KindType
 
       zonkKinds ctorKind
 
 inferKind
-  :: forall e a m
-   . ( MonadState Supply m
-     , AsKindError e a
+  :: forall x e a m
+   . ( AsKindError e a
      , MonadError e m
      )
-  => (String -> Maybe (Kind Void)) -- ^ Constructors
-  -> (a -> Maybe (Kind Void)) -- ^ Variables
-  -> Ty a
+  => Supply -- ^ Variable supply
+  -> (x -> m a) -- ^ Freeze variables
+  -> (String -> Maybe (Kind Void)) -- ^ Constructors
+  -> (x -> Maybe (Kind Void)) -- ^ Variables
+  -> Ty x
   -> m (Kind Void)
-inferKind a b ty =
-  runEquivT
-    id
-    combineKind
+inferKind supply freezeVars a b ty =
+  runKindM
+    supply
     (zonkKinds =<<
-     inferKindM (fmap (fmap absurd) . a) (fmap (fmap absurd) . b) ty)
+     inferKindM
+       (fmap (fmap absurd) . a)
+       (\x -> maybe (Left <$> freezeVars x) (pure . Right) . fmap (fmap absurd) $ b x)
+       ty)

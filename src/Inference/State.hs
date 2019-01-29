@@ -1,46 +1,95 @@
+{-# language DataKinds #-}
 {-# language FlexibleContexts #-}
 {-# language TemplateHaskell #-}
 module Inference.State where
 
-import Control.Applicative ((<|>))
 import Control.Concurrent.Supply (Supply, freshId)
-import Control.Lens.Getter (uses)
-import Control.Lens.Setter ((.=), (%=))
+import Control.Lens.Getter (uses, use)
+import Control.Lens.Setter ((.=), (%=), (+=))
 import Control.Lens.TH (makeLenses)
 import Control.Monad.State (MonadState)
-import Data.Sequence ((|>), Seq)
-import Data.Void (Void)
+import Data.Foldable (find)
+import Data.Sequence ((<|), (|>), ViewL(..), Seq)
+
+import qualified Data.Sequence as Seq
 
 import Evidence
 import Kind
 import Meta
+import Tm
 import Ty
 
-data EvEntry a b c
-  = EvEntry c (MetaT a Ty b)
+data EvEntry meta tyVar tmVar
+  = EvEntry
+  { _evPlaceholder :: Placeholder
+  , _evEvidence :: EvT (Tm (Meta 'Check meta tyVar)) tmVar
+  , _evType :: MetaT 'Check meta Ty tyVar
+  } deriving Eq
 
-data InferState a b c
+data InferState meta tyVar tmVar
   = InferState
   { _inferSupply :: Supply
-  , _inferEvidence :: Seq (EvEntry a b c)
-  , _inferKinds :: Meta a b -> Maybe (Kind Void)
+  , _inferEvidence :: Seq (EvEntry meta tyVar tmVar)
+  , _inferKinds :: Meta 'Check meta tyVar -> Maybe (Kind meta)
+  , _inferDepth :: !Int -- ^ Quantification depth
+  , _inferRank :: !Int -- ^ Lambda depth
   }
 makeLenses ''InferState
 
-newEv :: MonadState (InferState a b Int) m => MetaT a Ty b -> m (Ev Int x)
-newEv ty = do
+updateEvidence ::
+  MonadState (InferState meta tyVar tmVar) m =>
+  Placeholder ->
+  EvT (Tm (Meta 'Check meta tyVar)) tmVar ->
+  MetaT 'Check meta Ty tyVar ->
+  m ()
+updateEvidence ph' evTm evTy = inferEvidence %= go
+  where
+    go es =
+      case Seq.viewl es of
+        EmptyL -> mempty
+        ee@(EvEntry ph _ _) :< ees ->
+           if ph == ph'
+           then EvEntry ph evTm evTy <| ees
+           else ee <| go ees
+
+localEvidence :: MonadState (InferState meta tyVar tmVar) m => m a -> m a
+localEvidence m = do
+  evs <- use inferEvidence
+  m <* (inferEvidence .= evs)
+
+lookupEvidence ::
+  MonadState (InferState meta tyVar tmVar) m =>
+  Placeholder ->
+  m (EvEntry meta tyVar tmVar)
+lookupEvidence ph = do
+  evs <- use inferEvidence
+  case find ((== ph) . _evPlaceholder) evs of
+    Nothing -> error "lookupEvidence: not found"
+    Just ev -> pure ev
+
+newPlaceholder ::
+  MonadState (InferState meta tyVar tmVar) m =>
+  MetaT 'Check meta Ty tyVar ->
+  m (Ev x)
+newPlaceholder ty = do
   (v, supply') <- uses inferSupply freshId
   inferSupply .= supply'
-  inferEvidence %= (|> EvEntry v ty)
-  pure $ E v
+  let p = Placeholder v
+  inferEvidence %= (|> EvEntry p (EvT . pure $ P p) ty)
+  pure $ P p
 
-newMeta :: MonadState (InferState Int b c) m => Kind Void -> m (Meta Int b)
-newMeta kind = do
-  (v, supply') <- uses inferSupply freshId
-  inferSupply .= supply'
-  inferKinds %=
-    \f x ->
-      f x <|>
-      foldMeta (\y -> if y == v then Just kind else Nothing) (const Nothing) x
-  pure $ M v
+removePlaceholder ::
+  MonadState (InferState meta tyVar tmVar) m =>
+  Placeholder ->
+  m ()
+removePlaceholder ph = inferEvidence %= Seq.filter (\(EvEntry ph' _ _) -> ph /= ph')
 
+deep :: MonadState (InferState a b c) m => m x -> m x
+deep ma = do
+  d <- use inferDepth <* (inferDepth += 1)
+  ma <* (inferDepth .= d)
+
+ranked :: MonadState (InferState a b c) m => m x -> m x
+ranked ma = do
+  r <- use inferRank <* (inferRank += 1)
+  ma <* (inferRank .= r)

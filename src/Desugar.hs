@@ -13,7 +13,7 @@ desugar syn =
     SynAnn a b -> TmAnn (desugar a) b
     SynVar a -> TmVar a
     SynApp a b -> TmApp (desugar a) (desugar b)
-    SynLam s -> TmLam . toScope $ desugar (fromScope s)
+    SynLam s -> TmLam Nothing . toScope $ desugar (fromScope s)
     SynExtend l -> TmExtend l
     SynSelect l -> TmSelect l
     SynRestrict l -> TmRestrict l

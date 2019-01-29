@@ -1,214 +1,383 @@
 {-# language BangPatterns #-}
+{-# language DataKinds #-}
 {-# language FlexibleContexts #-}
-{-# language FlexibleInstances, FunctionalDependencies, MultiParamTypeClasses #-}
+{-# language FlexibleInstances, MultiParamTypeClasses #-}
+{-# language LambdaCase #-}
 {-# language OverloadedLists #-}
 {-# language ScopedTypeVariables #-}
-{-# language TemplateHaskell #-}
 {-# language RankNTypes #-}
 module Inference.Type where
 
-import Bound.Scope (abstractEither, fromScope, toScope)
+import Bound.Scope (instantiateVars, fromScope, toScope)
 import Bound.Var (Var(..), unvar)
 import Control.Concurrent.Supply (Supply)
 import Control.Lens.Getter (use)
-import Control.Lens.Review ((#))
+import Control.Monad (replicateM, unless)
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad.State (MonadState, evalStateT)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Class (lift)
-import Control.Monad.Writer.Strict (runWriterT)
 import Data.Bifunctor (first)
+import Data.Bitraversable (bitraverse)
 import Data.Coerce (coerce)
-import Data.Equivalence.Monad (MonadEquiv, equate, runEquivT)
-import Data.List (elemIndex)
-import Data.Maybe (fromJust)
+import Data.Foldable (traverse_)
+import Data.Maybe (fromJust, isJust)
 import Data.Traversable (for)
 import Data.Void (Void, absurd)
 
-import qualified Data.Set as Set
-
+import Bound.Scope.Utils (applyVars)
+import Data.List.Utils (filterM)
 import Evidence
 import Inference.Evidence
 import Inference.Kind
 import Inference.State
 import Inference.Type.Error
+import Inference.Type.Monad
 import Inference.Type.Row
 import Kind
 import Meta
 import Tm
 import Ty
 
-occursType :: Eq meta => meta -> MetaT meta Ty a -> Bool
+occursType :: Eq meta => meta -> MetaT 'Check meta Ty a -> Bool
 occursType v =
   foldr
-    (\a b -> foldMeta (== v) (const False) a || b)
+    (\a b -> foldMeta (== v) (const False) (const False) a || b)
     False .
     unMetaT
 
-combineType
-  :: (Show a, Show b, Ord a, Eq b)
-  => MetaT a Ty b
-  -> MetaT a Ty b
-  -> MetaT a Ty b
-combineType (MetaT x) (MetaT y) = MetaT $ go x y
+-- | Find escaping skolems, if any
+--
+-- A skolem meta escapes if its depth is greater than the one provided
+escapesType ::
+  Int ->
+  Ty (Meta 'Check meta tyVar) ->
+  TypeM s tyVar tmVar [Meta 'Check meta tyVar]
+escapesType depth = filterM (fmap (maybe False (depth <)) . skolemDepth)
+
+instantiateTyWith
+  :: (Ord tyVar, Show tyVar)
+  => (Kind Int -> KindM s' (TypeM s tyVar tmVar) (Meta 'Check Int tyVar))
+  -> MetaT 'Check Int Ty tyVar
+  -> KindM s'
+       (TypeM s tyVar tmVar)
+       ( [Meta 'Check Int tyVar]
+       , [MetaT 'Check Int Ty tyVar]
+       , MetaT 'Check Int Ty tyVar
+       )
+instantiateTyWith f ty = do
+  (metas, ty') <-
+    case unMetaT ty of
+      TyForall n s ->
+        deep $ do
+          metas <- replicateM n $ f =<< KindVar <$> newKindMeta
+          pure (metas, instantiateVars metas s)
+      x -> pure ([], x)
+  let (ty'', constraints) = coerce (stripConstraints ty')
+  pure (metas, constraints, ty'')
+
+applyEvidence ::
+  (Ord tyVar, Show tyVar) =>
+  (tmVar -> x) ->
+  Bool ->
+  [MetaT 'Check Int Ty tyVar] ->
+  EvT (Tm (Meta 'Check Int tyVar)) x ->
+  KindM s' (TypeM s tyVar tmVar) (EvT (Tm (Meta 'Check Int tyVar)) x)
+applyEvidence _ _ [] !a = pure a
+applyEvidence ctx canIntro (p:ps) (EvT !a) = do
+  (_, e) <- lift $ constructEvidence canIntro p
+  applyEvidence ctx canIntro ps $ EvT (TmApp a $ unEvT (ctx <$> e))
+
+instantiateWith
+  :: (Ord tyVar, Show tyVar, Show x)
+  => (tmVar -> x)
+  -> (Kind Int -> KindM s' (TypeM s tyVar tmVar) (Meta 'Check Int tyVar))
+  -> EvT (Tm (Meta 'Check Int tyVar)) x
+  -> MetaT 'Check Int Ty tyVar
+  -> KindM s' (TypeM s tyVar tmVar)
+       ( [MetaT 'Check Int Ty tyVar]
+       , EvT (Tm (Meta 'Check Int tyVar)) x
+       , MetaT 'Check Int Ty tyVar
+       )
+instantiateWith ctx f tm ty = do
+  (_, constraints, ty') <- instantiateTyWith f ty
+  tm' <- applyEvidence ctx True constraints tm
+  pure (constraints, tm', ty')
+
+-- | Assumes that binders have been merged
+--
+-- i.e. there are no nested quantifiers like `forall a b c. forall d e f. g`,
+-- and instead there are only flattened ones like `forall a b c d e f. g`
+--
+-- Impredicative row subsumption:
+--
+-- @subsumes( (), (f : B | s) )@ always
+--
+-- @subsumes( (f : A | r), (f : B | s) )@ when @subsumes(A, B)@
+--
+-- @subsumes( (f : A | r), (g : B | s) )@ when
+-- @unifies( (f : A | r), (g : B | s) )@
+instanceOf
+  :: (Show tyVar, Ord tyVar)
+  => (tmVar -> x)
+  -> (String -> Maybe (Kind Void)) -- ^ Type constructors
+  -> MetaT 'Check Int Ty tyVar
+  -> (EvT (Tm (Meta 'Check Int tyVar)) x, MetaT 'Check Int Ty tyVar)
+  -> KindM s' (TypeM s tyVar tmVar) (EvT (Tm (Meta 'Check Int tyVar)) x)
+instanceOf ctx tyCtorCtx ty1 (tm2, ty2) = do
+  (_, constraints1, ty1') <- instantiateTyWith (lift . newSkolem) ty1
+  (_, constraints2, ty2') <- instantiateTyWith (lift . newMetaInf) ty2
+
+  case (unMetaT ty1', unMetaT ty2') of
+    (TyApp TyVariant r, TyApp TyVariant r') -> rowInstanceOf r r'
+    (TyApp TyRecord r, TyApp TyRecord r') -> rowInstanceOf r r'
+    _ -> unifyType tyCtorCtx ty1' ty2'
+
+  constraints1' <- lift $ traverse findType constraints1
+  constraints2' <- lift $ traverse findType constraints2
+  localEvidence $ do
+    traverse_ newPlaceholder constraints1'
+    tm2' <- applyEvidence ctx False constraints2' tm2
+    (tm2'', _) <- lift $ abstractEvidence tm2'
+    pure tm2''
   where
-    go TyArr TyArr = TyArr
-    go TyRowEmpty TyRowEmpty = TyRowEmpty
-    go TyRecord TyRecord = TyRecord
-    go TyVariant TyVariant = TyVariant
-    go TyInt TyInt = TyInt
-    go (TyRowExtend l) (TyRowExtend l') | l == l' = TyRowExtend l
-    go (TyCtor s) (TyCtor s') | s == s' = TyCtor s
-    go (TyVar (N a)) (TyVar (N b)) | a == b = TyVar (N b)
-    go (TyVar (M a)) (TyVar (M b)) = TyVar $ M (min a b)
-    go (TyApp a b) (TyApp a' b') = TyApp (go a a') (go b b')
-    go (TyVar M{}) b = b
-    go a (TyVar M{}) = a
-    go _ _ =
+    -- this is an artifical restriction until we can get impredicativity
+    -- to fully co-operate with datatypes
+    instanceOfInner tyA tyB = do
+      (_, constraints1, tyA') <- instantiateTyWith (lift . newSkolem) tyA
+      (_, constraints2, tyB') <- instantiateTyWith (lift . newMetaInf) tyB
+      case (unMetaT tyA', unMetaT tyB') of
+        (TyApp TyVariant r, TyApp TyVariant r') -> rowInstanceOf r r'
+        (TyApp TyRecord r, TyApp TyRecord r') -> rowInstanceOf r r'
+        _ ->
+          unifyType tyCtorCtx tyA' tyB'
+
+      constraints1' <- lift $ traverse findType constraints1
+      constraints2' <- lift $ traverse findType constraints2
+      localEvidence $ do
+        traverse_ newPlaceholder constraints1'
+        lift $ traverse_ (constructEvidence False) constraints2'
+        lift $ traverse_ (constructEvidence False) constraints1'
+
+    rowInstanceOf TyRowEmpty TyRowEmpty = pure ()
+    rowInstanceOf TyRowEmpty (TyApp (TyApp TyRowExtend{} _) _) = pure ()
+    rowInstanceOf x@(TyApp (TyApp (TyRowExtend l) a) r) r' = do
+      res <- lift $ rewriteRow tyCtorCtx r l r'
+      case res of
+        Nothing -> do
+          dA <- lift . displayType $ MetaT x
+          dB <- lift . displayType $ MetaT r'
+          throwError $ TypeMismatch dA dB
+        Just (_, a', r'') -> do
+          instanceOfInner (MetaT a) (MetaT a')
+          MetaT s <- lift $ findType (MetaT r)
+          MetaT s'' <- lift $ findType (MetaT r'')
+          rowInstanceOf s s''
+    rowInstanceOf a@(TyVar M{}) b = unifyType tyCtorCtx (MetaT a) (MetaT b)
+    rowInstanceOf a b@(TyVar M{}) = unifyType tyCtorCtx (MetaT a) (MetaT b)
+    rowInstanceOf a b = do
+      dA <- lift $ displayType (MetaT a)
+      dB <- lift $ displayType (MetaT b)
       error $
-      "combineType: combining un-unifiable terms\n\n" <>
-      show x <>
-      "\n\n" <>
-      show y
+        "rowInstanceOf: expected arguments of kind Row\n\n"  <>
+        show dA <>
+        "\n\n" <>
+        show dB
 
 unifyType
-  :: forall tmVar tyVar ev c m
-   . ( MonadError (TypeError Int tyVar tmVar) m
-     , MonadState (InferState Int tyVar ev) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Eq tyVar, Show tyVar
-     )
+  :: forall s s' tmVar tyVar
+    . (Ord tyVar, Show tyVar)
   => (String -> Maybe (Kind Void)) -- ^ Type constructors
-  -> MetaT Int Ty tyVar
-  -> MetaT Int Ty tyVar
-  -> m ()
+  -> MetaT 'Check Int Ty tyVar
+  -> MetaT 'Check Int Ty tyVar
+  -> KindM s' (TypeM s tyVar tmVar) ()
 unifyType tyCtorCtx x y = do
-  supply <- use inferSupply
   tyVarCtx <- use inferKinds
-  x' <- unMetaT <$> findType x
-  y' <- unMetaT <$> findType y
-  xKind <- evalStateT (inferKind tyCtorCtx tyVarCtx x') supply
-  yKind <- evalStateT (inferKind tyCtorCtx tyVarCtx y') supply
-  if xKind == yKind
-    then go x' y'
-    else throwError $ _TypeKindMismatch # (MetaT x', absurd <$> xKind, MetaT y', absurd <$> yKind)
+  x' <- lift $ unMetaT <$> findType x
+  y' <- lift $ unMetaT <$> findType y
+  xKind <-
+    inferKindM
+      (fmap (fmap absurd) . tyCtorCtx)
+      (\v -> maybe (Left <$> displayTypeM v) (pure . Right) $ tyVarCtx v)
+      x'
+  yKind <-
+    inferKindM
+      (fmap (fmap absurd) . tyCtorCtx)
+      (\v -> maybe (Left <$> displayTypeM v) (pure . Right) $ tyVarCtx v)
+      y'
+  unifyKind xKind yKind
+  go x' y'
   where
-    go :: Ty (Meta Int tyVar) -> Ty (Meta Int tyVar) -> m ()
+    go ::
+      Ty (Meta 'Check Int tyVar) ->
+      Ty (Meta 'Check Int tyVar) ->
+      KindM s' (TypeM s tyVar tmVara) ()
     go TyArr TyArr = pure ()
     go TyRowEmpty TyRowEmpty = pure ()
     go TyRecord TyRecord = pure ()
     go TyVariant TyVariant = pure ()
     go TyInt TyInt = pure ()
+    go (TyForall 0 s) ty =
+      unifyType
+        tyCtorCtx
+        (MetaT $ instantiateVars [] s)
+        (MetaT ty)
+    go ty (TyForall 0 s) =
+      unifyType
+        tyCtorCtx
+        (MetaT ty)
+        (MetaT $ instantiateVars [] s)
+    go (TyForall n s) (TyForall n' s') =
+      deep $ do
+        let n'' = min n n'
+        skolems <-
+          replicateM n'' $
+          lift . newSkolem =<< KindVar <$> newKindMeta
+
+        go
+          (TyForall (n - n'') $ applyVars n'' skolems s)
+          (TyForall (n' - n'') $ applyVars n'' skolems s')
     go (TyRowExtend l) (TyRowExtend l') | l == l' = pure ()
     go ty@(TyApp (TyApp (TyRowExtend l) t) r) s = do
-      rewritten <- rewriteRow tyCtorCtx (rowTail r) l s
+      rewritten <- lift $ rewriteRow tyCtorCtx (rowTail r) l s
       case rewritten of
         Just (_, t', r') ->
           unifyType tyCtorCtx (MetaT t) (MetaT t') *>
           unifyType tyCtorCtx (MetaT r) (MetaT r')
-        Nothing -> throwError $ TypeMismatch (MetaT ty) (MetaT s)
+        Nothing -> do
+          dTy <- lift . displayType $ MetaT ty
+          dS <- lift . displayType $ MetaT s
+          throwError $ TypeMismatch dTy dS
     go s t@(TyApp (TyApp TyRowExtend{} _) _) = go t s
     go (TyCtor s) (TyCtor s') | s == s' = pure ()
     go (TyVar (N a)) (TyVar (N b)) | a == b = pure ()
-    go ty@(TyVar M{}) ty'@(TyVar M{}) = equate (MetaT ty) (MetaT ty')
+    go (TyVar (S _ a)) (TyVar (S _ b)) | a == b = pure ()
+    go ty@(TyVar M{}) ty'@(TyVar M{}) = lift $ equateType (MetaT ty) (MetaT ty')
     go (TyApp a b) (TyApp a' b') =
       unifyType tyCtorCtx (MetaT a) (MetaT a') *>
       unifyType tyCtorCtx (MetaT b) (MetaT b')
-    go ty'@(TyVar (M a)) ty =
+    go ty'@(TyVar v@(M _ _ a)) ty = do
+      d <- lift $ fromJust <$> metaDepth v
       if occursType a $ MetaT ty
-      then throwError $ TypeOccurs a (MetaT ty)
-      else equate (MetaT ty') (MetaT ty)
-    go ty ty'@(TyVar (M a)) =
-      if occursType a $ MetaT ty
-      then throwError $ TypeOccurs a (MetaT ty)
-      else equate (MetaT ty) (MetaT ty')
-    go l m = throwError $ TypeMismatch (MetaT l) (MetaT m)
+      then do
+        dTy <- lift . displayType $ MetaT ty
+        throwError $ TypeOccurs a dTy
+      else do
+        escs <- lift $ escapesType d ty
+        case escs of
+          [] -> lift $ equateType (MetaT ty') (MetaT ty)
+          metas -> do
+            dMetas <- lift $ traverse (displayType . MetaT . TyVar) metas
+            throwError $ TypeEscaped dMetas
+    go ty ty'@(TyVar M{}) = go ty' ty
+    go l m = do
+      dL <- lift . displayType $ MetaT l
+      dM <- lift . displayType $ MetaT m
+      throwError $ TypeMismatch dL dM
 
-generalize :: MetaT Int Ty tyVar -> Forall tyVar
-generalize (MetaT t) =
-  Forall (Set.size uniq) $
-  abstractEither
-    (foldMeta (Left . fromJust . (`elemIndex` ordered uniq metas)) Right)
-    t
-  where
-    ordered set xs =
-      case xs of
-        [] -> []
-        a:as ->
-          if a `Set.member` set
-          then a : ordered (Set.delete a set) as
-          else ordered set as
+generalize ::
+  (Ord tyVar, Show tyVar, Show tmVar) =>
+  (tmVar -> x) ->
+  EvT (Tm (Meta 'Check Int tyVar)) x -> -- ^ Term to generalize
+  MetaT 'Check Int Ty tyVar -> -- ^ Type to generalize
+  TypeM s tyVar tmVar
+    ( EvT (Tm (Meta 'Check Int tyVar)) x
+    , MetaT 'Check Int Ty tyVar
+    )
+generalize ctx tm ty = do
+  tm' <- solvePlaceholders ctx tm
+  (tm'', constraints) <- abstractEvidence tm'
 
-    (uniq, metas) =
-      foldr
-        (\a (b1, b2) -> foldMeta ((,) <$> (`Set.insert` b1) <*> (: b2)) (const (b1, b2)) a)
-        (Set.empty, [])
-        t
+  let ty' = foldr (tyConstraint . unMetaT) (unMetaT ty) constraints
 
-generalizeType
-  :: forall tyVar tmVar c x m
-   . ( MonadState (InferState Int tyVar Int) m
-     , MonadError (TypeError Int tyVar tmVar) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Eq tyVar
-     , Show tyVar, Show tmVar
-     , Show x
-     )
-  => (EvT Int (Tm (Meta Int tyVar)) x, MetaT Int Ty tyVar)
-  -> m (Tm Void x, Forall tyVar)
-generalizeType (EvT tm, MetaT ty) = do
-  (tm', constraints) <- finalizeEvidence tm
-  ty' <-
-    generalize <$>
-    findType (MetaT $ foldr (tyConstraint . unMetaT) ty constraints)
-  pure (stripAnnots tm', ty')
+  rank <- Rank <$> use inferRank
+  vars <- filterM (fmap (maybe False (>= rank)) . metaRank) ty'
 
-applyEvidence
-  :: ( MonadState (InferState Int tyVar Int) m
-     , MonadError (TypeError Int tyVar tmVar) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Show tyVar, Show x
-     )
-  => [MetaT Int Ty tyVar]
-  -> EvT Int (Tm (Meta Int tyVar)) x
-  -> m (EvT Int (Tm (Meta Int tyVar)) x)
-applyEvidence [] !a = pure a
-applyEvidence (p:ps) (EvT !a) = do
-  res <- fmap fst . runWriterT $ evidenceFor p
-  EvT e <- maybe (EvT . TmVar <$> newEv p) pure res
-  applyEvidence ps $ EvT (TmApp a e)
+  pure (tm'', MetaT $ forall_ vars ty')
+
+instantiate ::
+  (Ord tyVar, Show tyVar, Show x) =>
+  (tmVar -> x) ->
+  EvT (Tm (Meta 'Check Int tyVar)) x ->
+  MetaT 'Check Int Ty tyVar ->
+  KindM s' (TypeM s tyVar tmVar)
+    ( [MetaT 'Check Int Ty tyVar]
+    , EvT (Tm (Meta 'Check Int tyVar)) x
+    , MetaT 'Check Int Ty tyVar
+    )
+instantiate ctx tm ty = instantiateWith ctx (lift . newMetaInf) tm ty
+
+closeType ::
+  (Ord tyVar, Show tyVar, Show tmVar, Show x) =>
+  (tmVar -> x) ->
+  EvT (Tm (Meta 'Check Int tyVar)) x ->
+  MetaT 'Check Int Ty tyVar ->
+  TypeM s tyVar tmVar (Tm Void x, Ty tyVar)
+closeType ctx tm ty = do
+  (EvT tm', MetaT ty') <- generalize ctx tm ty
+  case traverse (\case; N a -> Just a; _ -> Nothing) ty' of
+    Nothing -> do
+      dTy <- showMetaT $ MetaT ty'
+      error $ "closeType: unsolved metas:\n\n" <> dTy
+    Just ty'' ->
+      case traverse (\case; V a -> Just a; _ -> Nothing) tm' of
+        Nothing -> do
+          dTy <- showMetaT $ MetaT ty'
+          dTm <- bitraverse displayTypeM pure tm'
+          error $ "closeType: unsolved evidence:\n\n" <> show dTm <> "\n\n" <> dTy
+        Just tm'' -> pure (stripAnnots tm'', ty'')
+
+funmatch ::
+  (Show tyVar, Ord tyVar) =>
+  (String -> Maybe (Kind Void)) -> -- ^ Type constructors
+  MetaT 'Check Int Ty tyVar ->
+  KindM s' (TypeM s tyVar tmVar)
+    ( MetaT 'Check Int Ty tyVar
+    , MetaT 'Check Int Ty tyVar
+    )
+funmatch tyCtorCtx (MetaT ty) =
+  case ty of
+    TyApp (TyApp TyArr i) o -> pure (MetaT i, MetaT o)
+    _ -> do
+      inTy <- lift $ TyVar <$> newMetaInf KindType
+      outTy <- lift $ TyVar <$> newMetaInf KindType
+      unifyType tyCtorCtx (MetaT ty) (MetaT $ tyArr inTy outTy)
+      pure (MetaT inTy, MetaT outTy)
 
 inferTypeM
-  :: ( MonadState (InferState Int tyVar Int) m
-     , MonadError (TypeError Int tyVar tmVar) m
-     , MonadEquiv c (MetaT Int Ty tyVar) (MetaT Int Ty tyVar) m
-     , Ord tyVar, Show tyVar, Show x
-     )
+  :: (Ord tyVar, Show tyVar, Show tmVar, Show x)
   => (tmVar -> x)
   -> (String -> Maybe (Kind Void)) -- ^ Type constructors
-  -> (x -> Either tmVar (MetaT Int Ty tyVar))
-  -> EvT Int (Tm (Meta Int tyVar)) x
-  -> m (EvT Int (Tm (Meta Int tyVar)) x, MetaT Int Ty tyVar)
+  -> (x -> Either tmVar (MetaT 'Check Int Ty tyVar))
+  -> EvT (Tm (Meta 'Check Int tyVar)) x
+  -> KindM s' (TypeM s tyVar tmVar)
+       ( EvT (Tm (Meta 'Check Int tyVar)) x
+       , MetaT 'Check Int Ty tyVar
+       )
 inferTypeM ctx tyCtorCtx varCtx tm =
   case unEvT tm of
     TmAnn a ty -> do
-      (EvT tm', aTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT a
-      unifyType tyCtorCtx aTy (MetaT ty)
-      pure (EvT $ TmAnn tm' ty, MetaT ty)
-    TmVar E{} -> error "trying to infer type for evidence variable"
+      inferTypeM ctx tyCtorCtx varCtx . EvT $
+        TmApp (TmLam (Just ty) $ toScope (pure $ B())) a
+    TmVar P{} -> error "trying to infer type for evidence placeholder"
     TmVar (V a) -> do
-      ty <- either (throwError . TypeVarNotFound) pure $ varCtx a
-      let (ty', constraints) = coerce (stripConstraints $ unMetaT ty)
-      tm' <- applyEvidence constraints tm
-      pure (tm', ty')
+      ty <- either (throwError . TypeVarNotFound) pure (varCtx a)
+      pure (tm, ty)
     TmApp a b -> do
-      (EvT a', aTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT a
-      (EvT b', MetaT bTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT b
-      retTy <- newMeta KindType
-      unifyType
-        tyCtorCtx
-        aTy
-        (MetaT $ TyApp (TyApp TyArr bTy) (TyVar retTy))
-      pure (EvT $ TmApp a' b', MetaT $ TyVar retTy)
+      (aTm, aTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT a
+
+      (_, EvT aTm', aTy') <- instantiate ctx aTm aTy
+      (inTy, outTy) <- funmatch tyCtorCtx aTy'
+
+      (bTm, bTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT b
+
+      inTy' <- lift $ findType inTy
+
+      EvT bTm' <- instanceOf ctx tyCtorCtx inTy' (bTm, bTy)
+
+      let tm' = TmApp aTm' bTm'
+      ty' <- lift $ findType outTy
+
+      lift $ generalize ctx (EvT tm') ty'
     TmAdd a b -> do
       (EvT a', aTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT a
       unifyType tyCtorCtx aTy (lift TyInt)
@@ -216,89 +385,105 @@ inferTypeM ctx tyCtorCtx varCtx tm =
       unifyType tyCtorCtx bTy (lift TyInt)
       pure (EvT $ TmAdd a' b', lift TyInt)
     TmRecord rs -> do
-      res <- for rs $ \(l, v) -> do
-        (v', vTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT v
-        pure (l, v', vTy)
+      res <-
+        for rs $ \(l, v) -> do
+          (v', vTy) <- inferTypeM ctx tyCtorCtx varCtx $ EvT v
+          pure (l, v', vTy)
+
+      let tm' = TmRecord $ (\(l, EvT v, _) -> (l, v)) <$> res
+      ty' <-
+        lift .
+        findType . MetaT $
+        tyRecord $
+        foldr (\(l, _, MetaT vTy) -> tyRowExtend l vTy) TyRowEmpty res
+
+      lift $ generalize ctx (EvT tm') ty'
+    TmLam aTy s -> do
+      (argTy, bodyTm, bodyTy) <- do
+        argTy <- maybe (lift $ TyVar <$> newMetaRank KindType) pure aTy
+        ranked $ do
+          (body, bodyTy) <-
+            inferTypeM
+              (F . ctx)
+              tyCtorCtx
+              (unvar (const $ Right $ MetaT argTy) varCtx)
+              (EvT $ sequence <$> fromScope s)
+          pure (argTy, body, bodyTy)
+
+      (_, EvT bodyTm', MetaT bodyTy') <- instantiate (F . ctx) bodyTm bodyTy
+
+      MetaT argTy' <- lift . findType $ MetaT argTy
+      unless (isJust aTy || isMonotype argTy') $ do
+        dArgTy <- lift . displayType $ MetaT argTy'
+        throwError $ TypePolymorphicArg dArgTy
+
+      p <- lift . findType $ MetaT $ tyArr argTy' bodyTy'
+
+      let tm' = EvT . TmLam aTy $ toScope $ sequence <$> bodyTm'
+
+      lift $ generalize ctx tm' p
+    TmSelect l ->
       pure
-        ( EvT . TmRecord $ (\(l, EvT v, _) -> (l, v)) <$> res
-        , MetaT . tyRecord $ foldr (\(l, _, MetaT vTy) -> tyRowExtend l vTy) TyRowEmpty res
-        )
-    TmLam s -> do
-      argTy <- newMeta KindType
-      (EvT body', bodyTy) <-
-        inferTypeM
-          (F . ctx)
-          tyCtorCtx
-          (unvar (const $ Right $ MetaT $ TyVar argTy) varCtx)
-          (EvT $ sequence <$> fromScope s)
-      pure
-        ( EvT $ TmLam $ toScope $ sequence <$> body'
-        , MetaT $ TyApp (TyApp TyArr (TyVar argTy)) (unMetaT bodyTy)
-        )
-    TmSelect l -> do
-      metaTy <- TyVar <$> newMeta KindType
-      metaRow <- TyVar <$> newMeta KindRow
-      tm' <- applyEvidence [MetaT $ tyOffset l metaRow] tm
-      pure
-        ( tm'
-        , MetaT $ tyArr (tyRecord $ tyRowExtend l metaTy metaRow) metaTy
-        )
-    TmRestrict l -> do
-      metaTy <- TyVar <$> newMeta KindType
-      metaRow <- TyVar <$> newMeta KindRow
-      tm' <- applyEvidence [MetaT $ tyOffset l metaRow] tm
-      pure
-        ( tm'
+        ( tm
         , MetaT $
-          tyArr (tyRecord $ tyRowExtend l metaTy metaRow) $
-          tyRecord metaRow
+          TyForall 2 . toScope $
+          tyConstraint (tyOffset l (pure $ B 0)) $
+          tyArr (tyRecord $ tyRowExtend l (pure $ B 1) (pure $ B 0)) $
+          pure (B 1)
         )
-    TmExtend l -> do
-      metaTy <- TyVar <$> newMeta KindType
-      metaRow <- TyVar <$> newMeta KindRow
-      tm' <- applyEvidence [MetaT $ tyOffset l metaRow] tm
+    TmRestrict l ->
       pure
-        ( tm'
+        ( tm
         , MetaT $
-          tyArr metaTy $
-          tyArr (tyRecord metaRow) $
-          tyRecord (tyRowExtend l metaTy metaRow)
+          TyForall 2 . toScope $
+          tyConstraint (tyOffset l (pure $ B 0)) $
+          tyArr (tyRecord $ tyRowExtend l (pure $ B 1) (pure $ B 0)) $
+          tyRecord (pure $ B 0)
         )
-    TmMatch l -> do
-      metaA <- TyVar <$> newMeta KindType
-      metaB <- TyVar <$> newMeta KindType
-      metaRow <- TyVar <$> newMeta KindRow
-      tm' <- applyEvidence [MetaT $ tyOffset l metaRow] tm
+    TmExtend l ->
       pure
-        ( tm'
+        ( tm
         , MetaT $
-          tyArr (tyVariant (tyRowExtend l metaA metaRow)) $
-          tyArr (tyArr metaA metaB) $
-          tyArr (tyArr (tyVariant metaRow) metaB) $
-          metaB
+          TyForall 2 . toScope $
+          tyConstraint (tyOffset l (pure $ B 0)) $
+          tyArr (pure $ B 1) $
+          tyArr (tyRecord (pure $ B 0)) $
+          tyRecord (tyRowExtend l (pure $ B 1) (pure $ B 0))
         )
-    TmInject l -> do
-      metaTy <- TyVar <$> newMeta KindType
-      metaRow <- TyVar <$> newMeta KindRow
-      tm' <- applyEvidence [MetaT $ tyOffset l metaRow] tm
+    TmMatch l ->
       pure
-        ( tm'
+        ( tm
         , MetaT $
-          tyArr metaTy (tyVariant $ tyRowExtend l metaTy metaRow)
+          TyForall 3 . toScope $
+          tyConstraint (tyOffset l (pure $ B 0)) $
+          tyArr (tyVariant (tyRowExtend l (pure $ B 1) (pure $ B 0))) $
+          tyArr (tyArr (pure $ B 1) (pure $ B 2)) $
+          tyArr (tyArr (tyVariant (pure $ B 0)) (pure $ B 2)) $
+          pure (B 2)
         )
-    TmEmbed l -> do
-      metaTy <- TyVar <$> newMeta KindType
-      metaRow <- TyVar <$> newMeta KindRow
-      tm' <- applyEvidence [MetaT $ tyOffset l metaRow] tm
+    TmInject l ->
       pure
-        ( tm'
+        ( tm
         , MetaT $
-          tyArr metaRow (tyVariant $ tyRowExtend l metaTy metaRow)
+          TyForall 2 . toScope $
+          tyConstraint (tyOffset l (pure $ B 0)) $
+          tyArr (pure $ B 1) $
+          tyVariant (tyRowExtend l (pure $ B 1) (pure $ B 0))
+        )
+    TmEmbed l ->
+      pure
+        ( tm
+        , MetaT $
+          TyForall 2 . toScope $
+          tyConstraint (tyOffset l (pure $ B 0)) $
+          tyArr (pure $ B 0) $
+          tyVariant (tyRowExtend l (pure $ B 1) (pure $ B 0))
         )
     TmInt n -> pure (EvT $ TmInt n, lift TyInt)
 
 inferType
   :: ( MonadError (TypeError Int tyVar tmVar) m
+     , MonadIO m
      , Ord tyVar
      , Show tyVar
      , Show tmVar
@@ -308,20 +493,26 @@ inferType
   -> (tyVar -> Maybe (Kind Void)) -- ^ Type variables
   -> (tmVar -> Either tmVar (Ty tyVar)) -- ^ Term variables
   -> Tm tyVar tmVar
-  -> m (Tm Void tmVar, Forall tyVar)
+  -> m (Tm Void tmVar, Ty tyVar)
 inferType supply tyCtorCtx tyVarCtx varCtx tm =
-  runEquivT
-    id
-    combineType
-    (evalStateT
-       (generalizeType =<<
-        inferTypeM
-          id
-          tyCtorCtx
-          (fmap lift . varCtx)
-          (lift $ first N tm))
-       (InferState
-        { _inferSupply = supply
-        , _inferEvidence = mempty
-        , _inferKinds = foldMeta (const Nothing) tyVarCtx
-        }))
+  (=<<) (either throwError pure) .
+  liftIO $
+  runTypeM
+    (InferState
+       { _inferSupply = supply
+       , _inferEvidence = mempty
+       , _inferKinds =
+           foldMeta
+             (const Nothing)
+             (const Nothing)
+             (fmap (fmap absurd) . tyVarCtx)
+       , _inferDepth = 0
+       , _inferRank = 0
+       })
+    (runKindM supply $
+     lift . uncurry (closeType id) =<<
+     inferTypeM
+       id
+       tyCtorCtx
+       (fmap lift . varCtx)
+       (lift $ first N tm))

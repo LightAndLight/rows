@@ -16,7 +16,9 @@ category:            Language
 extra-source-files:  CHANGELOG.md
 
 library
-  exposed-modules:     Desugar
+  exposed-modules:     Bound.Scope.Utils
+                     , Data.List.Utils
+                     , Desugar
                      , Desugar.Sections
                      , Eval
                      , Evidence
@@ -31,6 +33,7 @@ library
                      , Inference.Type
                      , Inference.Type.Row
                      , Inference.Type.Error
+                     , Inference.Type.Monad
                      , Label
                      , Optimisation
                      , Parser
@@ -68,6 +71,7 @@ test-suite rows-tests
                      , hedgehog
                      , hspec
                      , hw-hspec-hedgehog
+                     , lens
                      , megaparsec
                      , mtl
                      , plated1
